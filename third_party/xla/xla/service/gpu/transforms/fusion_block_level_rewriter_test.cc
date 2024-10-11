@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "mlir/IR/MLIRContext.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/service/gpu/backend_configs.pb.h"
@@ -34,8 +35,6 @@ limitations under the License.
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/model/gpu_hlo_cost_analysis.h"
 #include "xla/service/gpu/model/symbolic_tile_analysis.h"
-#include "xla/service/pattern_matcher.h"
-#include "xla/service/pattern_matcher_gmock.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/stream_executor/device_description.h"
@@ -46,8 +45,6 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 namespace {
-
-namespace m = ::xla::match;
 
 using ::tsl::testing::IsOkAndHolds;
 
@@ -76,6 +73,10 @@ class FusionBlockLevelRewriterTest : public HloTestBase {
       se::CudaComputeCapability::Ampere())};
 };
 
+bool RewriteEverythingPossible(const HloFusionInstruction* fusion) {
+  return true;
+}
+
 TEST_F(FusionBlockLevelRewriterTest,
        DoesNotRewriteFusionThatIsAlreadyBlockLevel) {
   const absl::string_view hlo_text = R"(
@@ -92,7 +93,8 @@ ENTRY entry {
 })";
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
                           ParseAndReturnVerifiedModule(hlo_text));
-  EXPECT_THAT(FusionBlockLevelRewriter(device_info_, ShapeSizeBytesFunction())
+  EXPECT_THAT(FusionBlockLevelRewriter(device_info_, ShapeSizeBytesFunction(),
+                                       RewriteEverythingPossible)
                   .Run(module.get()),
               IsOkAndHolds(false));
 }
@@ -111,12 +113,15 @@ ENTRY entry {
 })";
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
                           ParseAndReturnVerifiedModule(hlo_text));
-  EXPECT_THAT(FusionBlockLevelRewriter(device_info_, ShapeSizeBytesFunction())
+
+  EXPECT_THAT(FusionBlockLevelRewriter(device_info_, ShapeSizeBytesFunction(),
+                                       RewriteEverythingPossible)
                   .Run(module.get()),
               IsOkAndHolds(true));
-  EXPECT_THAT(module->entry_computation()->root_instruction(),
-              GmockMatch(m::Fusion(m::Parameter())
-                             .WithPredicate(HasTritonBlockLevelFusionConfig)));
+  const HloInstruction* root = module->entry_computation()->root_instruction();
+  EXPECT_EQ(root->opcode(), HloOpcode::kFusion);
+  EXPECT_EQ(root->fusion_kind(), HloInstruction::FusionKind::kCustom);
+  EXPECT_TRUE(HasTritonBlockLevelFusionConfig(root));
 }
 
 TEST_F(FusionBlockLevelRewriterTest,
@@ -139,7 +144,8 @@ ENTRY entry {
   ASSERT_FALSE(std::holds_alternative<SymbolicTileAnalysis>(
       SymbolicTileAnalysis::AnalyzeComputation(
           *module->GetComputationWithName("fusion_computation"), &ctx)));
-  EXPECT_THAT(FusionBlockLevelRewriter(device_info_, ShapeSizeBytesFunction())
+  EXPECT_THAT(FusionBlockLevelRewriter(device_info_, ShapeSizeBytesFunction(),
+                                       RewriteEverythingPossible)
                   .Run(module.get()),
               IsOkAndHolds(false));
 }
@@ -162,7 +168,8 @@ ENTRY entry {
   ASSERT_FALSE(IsTritonSupportedComputation(
       *module->GetComputationWithName("fusion_computation"),
       device_info_.gpu_compute_capability()));
-  EXPECT_THAT(FusionBlockLevelRewriter(device_info_, ShapeSizeBytesFunction())
+  EXPECT_THAT(FusionBlockLevelRewriter(device_info_, ShapeSizeBytesFunction(),
+                                       RewriteEverythingPossible)
                   .Run(module.get()),
               IsOkAndHolds(false));
 }

@@ -50,7 +50,7 @@ profiler = _xla.profiler
 
 # Just an internal arbitrary increasing number to help with backward-compatible
 # changes. In JAX, reference this via jax._src.lib.xla_extension_version.
-_version = 289
+_version = 290
 
 # Version number for MLIR:Python components.
 mlir_api_version = 57
@@ -89,6 +89,7 @@ def make_gpu_client(
     platform_name=None,
     allowed_devices=None,
     mock=False,
+    mock_gpu_topology=None,
 ):
   """Returns a GPU client. BFC allocator is used by default."""
   options = generate_pjrt_gpu_plugin_options()
@@ -120,6 +121,7 @@ def make_gpu_client(
       platform_name=platform_name,
       allowed_devices=allowed_devices,
       mock=mock,
+      mock_gpu_topology=mock_gpu_topology,
   )
 
 

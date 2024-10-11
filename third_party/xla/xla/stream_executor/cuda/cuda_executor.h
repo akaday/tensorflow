@@ -43,7 +43,6 @@ limitations under the License.
 #include "xla/stream_executor/event_based_timer.h"
 #include "xla/stream_executor/fft.h"
 #include "xla/stream_executor/gpu/gpu_driver.h"
-#include "xla/stream_executor/gpu/gpu_event.h"
 #include "xla/stream_executor/gpu/gpu_executor.h"
 #include "xla/stream_executor/gpu/gpu_kernel.h"
 #include "xla/stream_executor/gpu/gpu_types.h"
@@ -89,7 +88,7 @@ class CudaExecutor : public GpuExecutor {
   absl::Status BlockHostUntilDone(Stream* stream) override;
   absl::Status EnablePeerAccessTo(StreamExecutor* other) override;
   bool CanEnablePeerAccessTo(StreamExecutor* other) override;
-  bool DeviceMemoryUsage(int64_t* free, int64_t* total) const override;
+  bool DeviceMemoryUsage(int64_t* free_out, int64_t* total_out) const override;
   absl::StatusOr<std::unique_ptr<Kernel>> LoadKernel(
       const MultiKernelLoaderSpec& spec) override;
   void UnloadKernel(const Kernel* kernel) override;
@@ -177,9 +176,6 @@ class CudaExecutor : public GpuExecutor {
 
   bool UnloadGpuBinary(const void* gpu_binary)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(in_memory_modules_mu_);
-
-  // Creates a GpuEvent for the given stream.
-  absl::StatusOr<std::unique_ptr<GpuEvent>> CreateGpuEvent(bool allow_timing);
 
   // Returns true if a delay kernel is supported.
   absl::StatusOr<bool> DelayKernelIsSupported();

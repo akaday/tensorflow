@@ -14,18 +14,21 @@
 
 #include "tensorflow/lite/experimental/lrt/cc/lite_rt_tensor.h"
 
+#include <cstdint>
+
 #include <gtest/gtest.h>
 #include "absl/types/span.h"
 #include "tensorflow/lite/experimental/lrt/c/lite_rt_model.h"
 #include "tensorflow/lite/experimental/lrt/core/graph_tools.h"
-#include "tensorflow/lite/experimental/lrt/test_data/test_data_util.h"
+#include "tensorflow/lite/experimental/lrt/core/model.h"
+#include "tensorflow/lite/experimental/lrt/test/common.h"
 
 namespace {
 
 using ::lrt::LrtTensorManager;
 
 TEST(TestLrtTensorManager, SimpleRankedTensorSubgraphInput) {
-  auto model = LoadTestFileModel("one_mul.tflite");
+  auto model = lrt::testing::LoadTestFileModel("one_mul.tflite");
 
   ASSERT_RESULT_OK_ASSIGN(auto subgraph,
                           ::graph_tools::GetSubgraph(model.get()));
@@ -44,7 +47,7 @@ TEST(TestLrtTensorManager, SimpleRankedTensorSubgraphInput) {
 }
 
 TEST(TestLrtTensorManager, SimpleRankedTensorSubgraphOutput) {
-  auto model = LoadTestFileModel("one_mul.tflite");
+  auto model = lrt::testing::LoadTestFileModel("one_mul.tflite");
 
   ASSERT_RESULT_OK_ASSIGN(auto subgraph,
                           ::graph_tools::GetSubgraph(model.get()));
@@ -63,7 +66,7 @@ TEST(TestLrtTensorManager, SimpleRankedTensorSubgraphOutput) {
 }
 
 TEST(TestLrtTensorManager, SimpleRankedTensor) {
-  auto model = LoadTestFileModel("simple_multi_op.tflite");
+  auto model = lrt::testing::LoadTestFileModel("simple_multi_op.tflite");
 
   ASSERT_RESULT_OK_ASSIGN(auto subgraph,
                           ::graph_tools::GetSubgraph(model.get()));
@@ -80,4 +83,38 @@ TEST(TestLrtTensorManager, SimpleRankedTensor) {
   EXPECT_FALSE(tensor->IsSubgraphOutput());
   EXPECT_FALSE(tensor->IsSubgraphInput());
 }
+
+TEST(TestLrtTensorManager, NoStrides) {
+  int32_t dimensions[] = {1, 2, 3};
+
+  LrtTensorT tensor;
+  tensor.type_id = kLrtRankedTensorType;
+  tensor.type_detail.ranked_tensor_type.element_type = kLrtElementTypeFloat32;
+  tensor.type_detail.ranked_tensor_type.layout.rank =
+      sizeof(dimensions) / sizeof(dimensions[0]);
+  tensor.type_detail.ranked_tensor_type.layout.dimensions = dimensions;
+  tensor.type_detail.ranked_tensor_type.layout.strides = nullptr;
+
+  LrtTensorManager::Unique tensor_manager;
+  ASSERT_STATUS_OK(LrtTensorManager::MakeFromTensor(&tensor, tensor_manager));
+  EXPECT_FALSE(tensor_manager->HasStrides());
+}
+
+TEST(TestLrtTensorManager, Strides) {
+  int32_t dimensions[] = {1, 2, 3};
+  uint32_t strides[] = {6, 3, 1};
+
+  LrtTensorT tensor;
+  tensor.type_id = kLrtRankedTensorType;
+  tensor.type_detail.ranked_tensor_type.element_type = kLrtElementTypeFloat32;
+  tensor.type_detail.ranked_tensor_type.layout.rank =
+      sizeof(dimensions) / sizeof(dimensions[0]);
+  tensor.type_detail.ranked_tensor_type.layout.dimensions = dimensions;
+  tensor.type_detail.ranked_tensor_type.layout.strides = strides;
+
+  LrtTensorManager::Unique tensor_manager;
+  ASSERT_STATUS_OK(LrtTensorManager::MakeFromTensor(&tensor, tensor_manager));
+  EXPECT_TRUE(tensor_manager->HasStrides());
+}
+
 }  // namespace

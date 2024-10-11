@@ -42,7 +42,6 @@ limitations under the License.
 #include "xla/stream_executor/event_based_timer.h"
 #include "xla/stream_executor/fft.h"
 #include "xla/stream_executor/gpu/gpu_driver.h"
-#include "xla/stream_executor/gpu/gpu_event.h"
 #include "xla/stream_executor/gpu/gpu_executor.h"
 #include "xla/stream_executor/gpu/gpu_kernel.h"
 #include "xla/stream_executor/gpu/gpu_types.h"
@@ -52,6 +51,8 @@ limitations under the License.
 #include "xla/stream_executor/memory_allocation.h"
 #include "xla/stream_executor/module_spec.h"
 #include "xla/stream_executor/platform.h"
+#include "xla/stream_executor/rocm/rocm_context.h"
+#include "xla/stream_executor/rocm/rocm_event.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
 
@@ -157,7 +158,7 @@ class RocmExecutor : public GpuExecutor {
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(in_memory_modules_mu_);
 
   // Creates a GpuEvent for the given stream.
-  absl::StatusOr<std::unique_ptr<GpuEvent>> CreateGpuEvent(bool allow_timing);
+  absl::StatusOr<std::unique_ptr<RocmEvent>> CreateGpuEvent(bool allow_timing);
 
   // Guards the on-disk-module mapping.
   absl::Mutex disk_modules_mu_;
@@ -216,6 +217,9 @@ class RocmExecutor : public GpuExecutor {
 
   // GPU ISA version for device_.
   int version_;
+
+  // RocmContext for this device.
+  RocmContext* rocm_context_;
 };
 
 }  // namespace stream_executor::gpu

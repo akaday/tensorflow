@@ -1551,24 +1551,26 @@ void RemoveShardingsWhereSmallDimsShardedAcrossManyDevices(
 
 void ScaleCostsWithExecutionCounts(const int64_t execution_count,
                                    StrategyGroup& strategy_group) {
-  if (strategy_group.is_tuple) {
-    for (const auto& child : strategy_group.GetChildren()) {
-      ScaleCostsWithExecutionCounts(execution_count, *child);
+  auto scale_cost = [&execution_count](double& cost) {
+    if (cost < kInfinityCost - 1) {
+      cost *= execution_count;
     }
-  } else {
-    for (size_t sid = 0; sid < strategy_group.GetStrategies().size(); ++sid) {
-      ShardingStrategy& strategy = strategy_group.GetStrategy(sid);
-      strategy.compute_cost *= execution_count;
-      strategy.communication_cost *= execution_count;
-      for (auto i = 0; i < strategy.communication_resharding_costs.size();
-           ++i) {
-        for (auto j = 0; j < strategy.communication_resharding_costs[i].size();
+  };
+  auto scale_for_leaf = [&](StrategyGroup& leaf_strategy_group) {
+    for (int sid = 0; sid < leaf_strategy_group.GetStrategies().size(); ++sid) {
+      ShardingStrategy& strategy = leaf_strategy_group.GetStrategy(sid);
+      scale_cost(strategy.compute_cost);
+      scale_cost(strategy.communication_cost);
+      for (int i = 0; i < strategy.communication_resharding_costs.size(); ++i) {
+        for (int j = 0; j < strategy.communication_resharding_costs[i].size();
              ++j) {
-          strategy.communication_resharding_costs[i][j] *= execution_count;
+          scale_cost(strategy.communication_resharding_costs[i][j]);
         }
       }
     }
-  }
+  };
+
+  strategy_group.ForEachLeafStrategyGroup(scale_for_leaf);
 }
 
 std::unique_ptr<StrategyGroup> CreateElementwiseOperatorStrategies(
@@ -3421,10 +3423,15 @@ absl::flat_hash_set<const HloInstruction*> ComputeInstructionsToShard(
   for (HloInstruction* instruction : sequence.instructions()) {
     if (spmd::IsSPMDFullToShardShapeCustomCall(instruction)) {
       for (const HloInstruction* user : instruction->users()) {
-        if (spmd::IsSPMDShardToFullShapeCustomCall(user)) {
-          continue;
+        if (!spmd::IsSPMDShardToFullShapeCustomCall(user)) {
+          queue.push(user);
         }
-        queue.push(user);
+      }
+    } else if (spmd::IsSPMDShardToFullShapeCustomCall(instruction)) {
+      for (const HloInstruction* operand : instruction->operands()) {
+        if (!spmd::IsSPMDFullToShardShapeCustomCall(operand)) {
+          queue.push(operand);
+        }
       }
     }
   }
@@ -3442,30 +3449,27 @@ absl::flat_hash_set<const HloInstruction*> ComputeInstructionsToShard(
          instruction->called_computations()) {
       for (const HloInstruction* parameter :
            computation->parameter_instructions()) {
-        if (spmd::IsSPMDShardToFullShapeCustomCall(parameter) ||
-            spmd::IsSPMDFullToShardShapeCustomCall(parameter) ||
-            parameter == instruction || visited.contains(parameter)) {
-          continue;
+        if (!spmd::IsSPMDShardToFullShapeCustomCall(parameter) &&
+            !spmd::IsSPMDFullToShardShapeCustomCall(parameter) &&
+            parameter != instruction && !visited.contains(parameter)) {
+          queue.push(parameter);
         }
-        queue.push(parameter);
       }
     }
 
     for (const HloInstruction* user : instruction->users()) {
-      if (spmd::IsSPMDShardToFullShapeCustomCall(user) ||
-          spmd::IsSPMDFullToShardShapeCustomCall(user) ||
-          visited.contains(user)) {
-        continue;
+      if (!spmd::IsSPMDShardToFullShapeCustomCall(user) &&
+          !spmd::IsSPMDFullToShardShapeCustomCall(user) &&
+          !visited.contains(user)) {
+        queue.push(user);
       }
-      queue.push(user);
     }
     for (const HloInstruction* operand : instruction->operands()) {
-      if (spmd::IsSPMDShardToFullShapeCustomCall(operand) ||
-          spmd::IsSPMDFullToShardShapeCustomCall(operand) ||
-          operand == instruction || visited.contains(operand)) {
-        continue;
+      if (!spmd::IsSPMDShardToFullShapeCustomCall(operand) &&
+          !spmd::IsSPMDFullToShardShapeCustomCall(operand) &&
+          operand != instruction && !visited.contains(operand)) {
+        queue.push(operand);
       }
-      queue.push(operand);
     }
   }
 
@@ -3473,12 +3477,10 @@ absl::flat_hash_set<const HloInstruction*> ComputeInstructionsToShard(
   for (HloInstruction* instruction : sequence.instructions()) {
     if (!visited.contains(instruction) &&
         !spmd::IsSPMDFullToShardShapeCustomCall(instruction)) {
-      if (HloCollectiveInstruction::ClassOf(instruction)) {
-        LOG(FATAL) << "The module contains collective ops not contained within "
-                      "a graph surrounded by SPMDFullToShardShape and "
-                      "SPMDShardToFullShape custom calls. This case is not yet "
-                      "supported.";
-      }
+      LOG_IF(FATAL, HloCollectiveInstruction::ClassOf(instruction))
+          << "The module contains collective ops not contained within a graph "
+             "surrounded by SPMDFullToShardShape and SPMDShardToFullShape "
+             "custom calls. This case is not yet supported.";
       to_shard.insert(instruction);
     }
   }

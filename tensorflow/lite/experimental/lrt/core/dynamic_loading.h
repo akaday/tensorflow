@@ -18,6 +18,9 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 
+#include <iostream>
+#include <ostream>
+
 #include "absl/strings/string_view.h"
 #include "tensorflow/lite/experimental/lrt/c/lite_rt_common.h"
 #include "tensorflow/lite/experimental/lrt/core/logging.h"
@@ -28,7 +31,7 @@ namespace lrt {
 LrtStatus OpenLib(absl::string_view so_path, void** lib_handle);
 
 // Dumps loading details of given lib handle.
-void DumpLibInfo(void* lib_handle);
+void DumpLibInfo(void* lib_handle, std::ostream& out = std::cerr);
 
 // Resolves a named symbol from given lib handle of type Sym.
 template <class Sym>
@@ -37,8 +40,8 @@ inline static LrtStatus ResolveLibSymbol(void* lib_handle,
                                          Sym* sym_handle) {
   Sym ptr = (Sym)::dlsym(lib_handle, sym_name.data());
   if (ptr == nullptr) {
-    LITE_RT_LOG(ERROR, "Faild to resolve symbol: %s, with err: %s\n", sym_name,
-                ::dlerror());
+    LITE_RT_LOG(LRT_ERROR, "Faild to resolve symbol: %s, with err: %s\n",
+                sym_name, ::dlerror());
     return kLrtStatusDynamicLoadErr;
   }
   *sym_handle = ptr;

@@ -14,7 +14,7 @@ load(
 load("//xla:package_groups.bzl", "xla_tests_package_groups")
 load("//xla:xla.bzl", "tests_build_defs_bzl_deps", "xla_cc_binary", "xla_cc_test")
 load("//xla/tests:build_defs.bzl", "generate_backend_suites", "generate_backend_test_macros", "xla_test", "xla_test_library")
-load("//xla/tsl:tsl.bzl", "internal_visibility")
+load("//xla/tsl:tsl.bzl", "if_google", "internal_visibility")
 load("//xla/tsl:tsl.default.bzl", "filegroup")
 
 package(
@@ -121,8 +121,8 @@ cc_library(
         "//xla:types",
         "//xla:util",
         "//xla/hlo/ir:hlo",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/service:hlo_module_config",
-        "//xla/service:hlo_parser",
         "//xla/service:hlo_verifier",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
@@ -354,9 +354,9 @@ cc_library(
         "//xla/client:client_library",
         "//xla/client:local_client",
         "//xla/hlo/builder:xla_computation",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/service:computation_placer",
         "//xla/service:hlo_module_config",
-        "//xla/service:hlo_parser",
         "//xla/service:local_service",
         "//xla/service:platform_util",
         "//xla/service:shaped_buffer",
@@ -395,6 +395,19 @@ xla_test(
 xla_test(
     name = "buffer_donation_test",
     srcs = ["buffer_donation_test.cc"],
+    backend_args = if_google(
+        {
+            "cpu": [
+                # TODO(b/372312816): Fix the leak in the test.
+                "--heap_check=",
+            ],
+            "interpreter": [
+                # TODO(b/372312816): Fix the leak in the test.
+                "--heap_check=",
+            ],
+        },
+        {},
+    ),
     tags = ["test_xla_cpu_thunks"],
     deps = [
         ":hlo_test_base",
@@ -953,8 +966,8 @@ xla_test(
         "//xla/hlo/builder:xla_builder",
         "//xla/hlo/builder/lib:arithmetic",
         "//xla/hlo/builder/lib:matrix",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/service",
-        "//xla/service:hlo_parser",
         "//xla/service:platform_util",
         "//xla/service:shaped_buffer",
         "//xla/stream_executor:device_description",
@@ -1004,7 +1017,7 @@ xla_test(
         "//xla/hlo/builder:xla_builder",
         "//xla/hlo/builder/lib:arithmetic",
         "//xla/hlo/builder/lib:matrix",
-        "//xla/service:hlo_parser",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:ml_dtypes",
@@ -1050,7 +1063,7 @@ xla_test(
         "//xla/hlo/builder:xla_builder",
         "//xla/hlo/builder/lib:arithmetic",
         "//xla/hlo/builder/lib:matrix",
-        "//xla/service:hlo_parser",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:ml_dtypes",
@@ -1135,7 +1148,7 @@ xla_test(
         "//xla/hlo/builder:xla_builder",
         "//xla/hlo/builder/lib:arithmetic",
         "//xla/hlo/builder/lib:matrix",
-        "//xla/service:hlo_parser",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/stream_executor:stream_executor_memory_allocator",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:ml_dtypes",
@@ -1637,7 +1650,7 @@ xla_test(
         "//xla/client:local_client",
         "//xla/hlo/builder:xla_builder",
         "//xla/hlo/builder:xla_computation",
-        "//xla/service:hlo_parser",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/tsl/lib/core:status_test_util",
         "@com_google_absl//absl/status:statusor",
         "@local_tsl//tsl/platform:test",
@@ -2359,15 +2372,10 @@ xla_test(
             "multi_gpu",
             "no_oss",
         ],
-        "cpu": [
-            "notsan",
-        ],
     },
     backends = [
         "gpu",
-        "cpu",
     ],
-    tags = ["test_xla_cpu_thunks"],
     deps = [
         ":hlo_test_base",
         ":literal_test_util",
@@ -2381,6 +2389,7 @@ xla_test(
         "//xla:shape_util",
         "//xla:statusor",
         "//xla/hlo/ir:hlo",
+        "//xla/service:computation_placer",
         "//xla/service:executable",
         "//xla/service:hlo_module_config",
         "@com_google_absl//absl/log",
@@ -2433,10 +2442,10 @@ xla_test(
         "//xla:error_spec",
         "//xla:util",
         "//xla/hlo/ir:hlo",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/hlo/pass:hlo_pass_pipeline",
         "//xla/service:collective_pipeliner",
         "//xla/service:hlo_dce",
-        "//xla/service:hlo_parser",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
@@ -2969,8 +2978,8 @@ xla_test(
         "//xla:shape_util",
         "//xla:types",
         "//xla:xla_data_proto_cc",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/service:generic_transfer_manager",
-        "//xla/service:hlo_parser",
         "//xla/service:shaped_buffer",
         "//xla/service:stream_pool",
         "//xla/stream_executor",
@@ -3031,7 +3040,7 @@ xla_test(
         ":xla_internal_test_main",
         "//xla:shape_util",
         "//xla/hlo/builder:xla_builder",
-        "//xla/service:hlo_parser",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/tsl/lib/core:status_test_util",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/container:flat_hash_set",
