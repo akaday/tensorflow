@@ -163,6 +163,11 @@ def _tf_repositories():
             "//third_party/mkl_dnn:onednn_acl_thread_local_scheduler.patch",
             "//third_party/mkl_dnn:onednn_acl_fp32_bf16_reorder.patch",
             "//third_party/mkl_dnn:onednn_acl_bf16_capability_detection_for_ubuntu20.04.patch",
+            "//third_party/mkl_dnn:onednn_acl_indirect_conv.patch",
+            "//third_party/mkl_dnn:onednn_acl_allow_blocked_weight_format_for_matmul_primitive.patch",
+            "//third_party/mkl_dnn:onednn_acl_fix_segfault_during_postop_execute.patch",
+            "//third_party/mkl_dnn:onednn_acl_add_bf16_platform_support_check.patch",
+            "//third_party/mkl_dnn:onednn_acl_add_sbgemm_matmul_primitive_definition.patch",
         ],
         sha256 = "2f76b407ef8893cca71340f88cd800019a1f14f8ac1bbdbb89a84be1370b52e3",
         strip_prefix = "oneDNN-3.2.1",
@@ -291,15 +296,6 @@ def _tf_repositories():
     )
 
     tf_http_archive(
-        name = "nsync",
-        patch_file = ["//third_party:nsync.patch"],
-        sha256 = "1d63e967973733d2c97e841e3c05fac4d3fa299f01d14c86f2695594c7a4a2ec",
-        strip_prefix = "nsync-1.29.2",
-        system_build_file = "//third_party/systemlibs:nsync.BUILD",
-        urls = tf_mirror_urls("https://github.com/google/nsync/archive/1.29.2.tar.gz"),
-    )
-
-    tf_http_archive(
         name = "com_google_googletest",
         sha256 = "81964fe578e9bd7c94dfdb09c8e4d6e6759e19967e397dbea48d1c10e45d0df2",
         strip_prefix = "googletest-release-1.12.1",
@@ -323,10 +319,10 @@ def _tf_repositories():
     tf_http_archive(
         name = "curl",
         build_file = "//third_party:curl.BUILD",
-        sha256 = "9c6db808160015f30f3c656c0dec125feb9dc00753596bf858a272b5dd8dc398",
-        strip_prefix = "curl-8.6.0",
+        sha256 = "264537d90e58d2b09dddc50944baf3c38e7089151c8986715e2aaeaaf2b8118f",
+        strip_prefix = "curl-8.11.0",
         system_build_file = "//third_party/systemlibs:curl.BUILD",
-        urls = tf_mirror_urls("https://curl.se/download/curl-8.6.0.tar.gz"),
+        urls = tf_mirror_urls("https://curl.se/download/curl-8.11.0.tar.gz"),
     )
 
     # WARNING: make sure ncteisen@ and vpai@ are cc-ed on any CL to change the below rule

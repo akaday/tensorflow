@@ -73,7 +73,6 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_executor.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
-#include "tensorflow/compiler/mlir/tensorflow/translate/node_order.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/upgrade_graph.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_attr.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_tensor.h"
@@ -83,6 +82,10 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/mangling_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/translate_utils.h"
+#include "tensorflow/compiler/mlir/tf2xla/internal/node_order.h"
+#include "tensorflow/compiler/tf2xla/functionalize_control_flow.h"
+#include "tensorflow/compiler/tf2xla/functionalize_control_flow_util.h"
+#include "tensorflow/compiler/tf2xla/tf2xla_defs.h"
 #include "xla/status_macros.h"
 #include "tensorflow/core/common_runtime/function_body.h"
 #include "tensorflow/core/common_runtime/function_def_utils.h"
@@ -2675,6 +2678,11 @@ absl::Status GraphDefImporter::GetControlRetsFromGraph(
   return absl::OkStatus();
 }
 
+bool IsCompiledNode(const Node* n) {
+  return n->attrs().Find(tensorflow::kTpuReplicateAttr) ||
+         n->attrs().Find(tensorflow::kCompileDeviceTypeAttr);
+}
+
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ConvertGraphToTfExecutor(
     const Graph& graph, const GraphDebugInfo& debug_info,
     const FunctionLibraryDefinition& flib_def, const GraphImportConfig& specs,
@@ -2682,10 +2690,15 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ConvertGraphToTfExecutor(
     std::unordered_map<std::string, std::string>* tf_name_to_mlir_name) {
   // TODO(jpienaar): Remove need to const_cast.
   if (specs.upgrade_legacy) {
-    TF_RETURN_IF_ERROR(
-        UpgradeLegacyGraph(const_cast<Graph*>(&graph),
-                           const_cast<FunctionLibraryDefinition*>(&flib_def),
-                           specs.restrict_functionalization_to_compiled_nodes));
+    NodeFilter node_filter = specs.restrict_functionalization_to_compiled_nodes
+                                 ? IsCompiledNode
+                                 : NodeFilter{};
+    TF_RETURN_WITH_CONTEXT_IF_ERROR(
+        FunctionalizeControlFlow(
+            const_cast<Graph*>(&graph),
+            const_cast<FunctionLibraryDefinition*>(&flib_def), node_filter,
+            /*include_functions=*/true),
+        tensorflow::kFunctionalizeControlFlowFailureMessage);
   }
 
   std::unordered_map<std::string, std::string> local_tf_name_to_mlir_name;

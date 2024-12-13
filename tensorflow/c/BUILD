@@ -3,8 +3,8 @@
 
 load("@bazel_skylib//lib:selects.bzl", "selects")
 load("@local_config_tensorrt//:build_defs.bzl", "if_tensorrt")
-load("@local_tsl//tsl/platform:build_config_root.bzl", "if_pywrap")
-load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
+load("@local_xla//xla/tsl/platform:build_config_root.bzl", "if_pywrap")
+load("@local_xla//xla/tsl/platform:rules_cc.bzl", "cc_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "check_deps",
@@ -151,10 +151,7 @@ tf_cuda_library(
         "tf_tensor.h",
         "tf_tstring.h",
     ],
-    visibility = [
-        "//tensorflow:internal",
-        "//tensorflow/c:__subpackages__",
-    ],
+    visibility = ["//visibility:public"],
     deps = selects.with_or({
         "//tensorflow:android": [
             "//tensorflow/core:portable_tensorflow_lib_lite",
@@ -557,7 +554,7 @@ tf_cuda_library(
         "tf_tensor_helper.h",
         "tf_tensor_internal.h",
     ],
-    visibility = ["//tensorflow:internal"],
+    visibility = ["//visibility:public"],
     deps = [
         ":c_api_macros",
         ":tensor_interface",
@@ -751,6 +748,7 @@ tf_cuda_library(
         "//tensorflow/core/platform:status",
         "//tensorflow/core/platform:stringpiece",
         "//tensorflow/core/platform:types",
+        "@com_google_absl//absl/status",
     ],
 )
 
@@ -811,7 +809,7 @@ tf_cuda_library(
             "//tensorflow/core:framework_lite",
             "//tensorflow/core:protos_all_cc",
             "@local_tsl//tsl/platform:statusor",
-            "@local_xla//xla/stream_executor",
+            "@local_xla//xla/stream_executor:stream",
             "@local_xla//xla/tsl/framework:device_id_utils",
         ],
     }),

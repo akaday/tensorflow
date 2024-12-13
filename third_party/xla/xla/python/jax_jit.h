@@ -160,7 +160,7 @@ H AbslHashValue(H h, const ArgumentSignature& s) {
 // kwnames: either None or a tuple containing the keyword argument names
 // static_argnums: the indices of the static arguments in the positional
 //   arguments
-// static_argnames: the names of the static arguments
+// static_argnames: the names of the static arguments, which must be interned.
 // pytree_registry: the registry to use to convert the arguments to pytrees
 // signature: output; describes the static arguments and the identities of the
 //  dynamic arguments.
@@ -214,6 +214,8 @@ struct CallSignature {
   std::optional<nanobind::object> global_extra_jit_context;
   std::optional<nanobind::object> thread_local_extra_jit_context;
 
+  std::vector<nanobind::object> configs;
+
   bool operator==(const CallSignature& other) const;
   bool operator!=(const CallSignature& other) const {
     return !(*this == other);
@@ -233,8 +235,7 @@ H AbslHashValue(H h, const CallSignature& s) {
   // slow python hashing function. Consider implementing hashing function and
   // equality checks in C++ in jax::Sharding and use those here.
   for (const auto& sharding : s.dynamic_arg_shardings) {
-    // TODO(phawkins): remove .ptr() after nanobind transition is complete.
-    h = H::combine(std::move(h), ShardingHash(sharding.ptr()));
+    h = H::combine(std::move(h), ShardingHash(sharding));
   }
 
   h = H::combine(std::move(h), s.committed_args, s.device, s.jax_enable_x64);

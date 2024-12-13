@@ -21,6 +21,9 @@ limitations under the License.
 namespace xla {
 namespace sdy {
 
+// The attribute name for attributes in MHLO ops.
+inline constexpr llvm::StringRef kMhloAttributesAttr = "mhlo.attributes";
+
 // The attribute name for xla::HloSharding.
 inline constexpr llvm::StringRef kXlaShardingAttr = "mhlo.sharding";
 
@@ -63,6 +66,15 @@ inline constexpr llvm::StringRef kMeshesRoundTripAttr = "xla.sdy.meshes";
 // round-trip.
 inline constexpr llvm::StringRef kFuncResultShardingTargetName =
     "xla.sdy.FuncResultSharding";
+
+// The target name of the ShardingGroup custom call.
+inline constexpr llvm::StringRef kShardingGroupCustomCallTargetName =
+    "xla.sdy.ShardingGroup";
+
+// Sharding group id attribute name. The attribute will be of type `int64_t`
+// and will be used to identify a group of ops that should be sharded together.
+inline constexpr llvm::StringRef kShardingGroupIdAttr =
+    "xla.sdy.sharding_group_id";
 
 // Attribute name for storing frontend attributes in XLA.
 inline constexpr llvm::StringRef kFrontendAttributesAttr =

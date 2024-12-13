@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <functional>
 
+#include "absl/status/status.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/framework/device_base.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -69,8 +70,8 @@ class PluggableDeviceContext : public DeviceContext {
   void MaintainLifetimeOnStream(const Tensor* t,
                                 se::Stream* stream) const override {}
 
-  Status ThenExecute(Device* device, se::Stream* stream,
-                     std::function<void()> func) override;
+  absl::Status ThenExecute(Device* device, se::Stream* stream,
+                           std::function<void()> func) override;
 
   bool IsPluggableDevice() override;
 

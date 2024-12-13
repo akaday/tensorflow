@@ -88,6 +88,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/translate_utils.h"
 #include "tensorflow/compiler/mlir/tf2xla/api/v2/graph_to_tf_executor.h"
+#include "tensorflow/compiler/tf2xla/functionalize_control_flow.h"
 #include "xla/status_macros.h"
 #include "tensorflow/core/common_runtime/function_body.h"
 #include "tensorflow/core/common_runtime/function_def_utils.h"
@@ -129,8 +130,6 @@ namespace tensorflow {
 
 constexpr size_t kNumThreadToConvertSignatures = 10;
 
-using ::mlir::NamedAttrList;
-using ::mlir::TensorType;
 using ::mlir::tf_saved_model::AssetOp;
 using ::mlir::tf_saved_model::GlobalTensorOp;
 using ::mlir::tf_saved_model::kTfSavedModelExportedNamesAttr;
@@ -192,57 +191,6 @@ class NameUniquifier : public OpOrArgNameMapper {
   const FunctionLibraryDefinition& flib_;
 };
 
-
-// Returns true if the node with given name has a non primary output that is
-// used by some other node as an input. Returns false if no outputs are in use
-// or only the first output is in use.
-bool HasNonPrimaryOutputInUse(const GraphDef& graph_def,
-                              const std::string& node) {
-  for (const auto& node_def : graph_def.node()) {
-    for (const auto& input : node_def.input()) {
-      if (absl::StartsWith(input, node + ":") && input != node + ":0") {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-// Updates the given LegacyFedInput node with Placeholder node if it is one of
-// the inputs. Returns an error if non primary output of the LegacyFedInput node
-// is in use and therefore can not be replaced by the Placeholder node that only
-// has a single output.
-Status UpdateLegacyFedInputNode(const GraphDef& graph_def,
-                                const GraphImportConfig::InputArrays& inputs,
-                                NodeDef* node) {
-  const std::string& node_name = node->name();
-  auto it = inputs.find(node_name);
-
-  // Node is not an input.
-  if (it == inputs.end()) return absl::OkStatus();
-
-  if (HasNonPrimaryOutputInUse(graph_def, node_name)) {
-    return errors::InvalidArgument(
-        "LegacyFedInput node ", node->name(),
-        " has non primary output in use and can not be replaced with "
-        "Placeholder node");
-  }
-
-  DataType dtype = it->second.imported_dtype;
-  // Uses the existing output type if it isn't specified by the user.
-  if (dtype == DT_INVALID) {
-    dtype = node->attr().at("output_types").list().type(0);
-  }
-  // Update op name, drop inputs and set attributes required by the Placeholder
-  // op.
-  *node->mutable_op() = "Placeholder";
-  node->clear_attr();
-  node->clear_input();
-  AddNodeAttr("dtype", dtype, node);
-  AddNodeAttr("shape", it->second.shape, node);
-  return absl::OkStatus();
-}
-
 // Preprocesses GraphDef before it can be converted to Graph by,
 // - Adding the default attributes to each node def if they are missing from
 //   the GraphDef.
@@ -250,14 +198,6 @@ Status UpdateLegacyFedInputNode(const GraphDef& graph_def,
 //   convert_legacy_fed_inputs option is enabled.
 Status PreprocessGraphDef(const GraphImportConfig* specs, GraphDef* graph_def) {
   for (auto& node_def : *graph_def->mutable_node()) {
-    // TODO(hinsu): Completely deprecate support for LegacyFedInput ops. One
-    // solution could be have a tool to let users upgrade old serialized graphs.
-    if (specs && specs->convert_legacy_fed_inputs &&
-        node_def.op() == "LegacyFedInput") {
-      TF_RETURN_IF_ERROR(
-          UpdateLegacyFedInputNode(*graph_def, specs->inputs, &node_def));
-    }
-
     const tensorflow::OpRegistrationData* op_reg_data =
         tensorflow::OpRegistry::Global()->LookUp(node_def.op());
     if (!op_reg_data) {
@@ -1066,9 +1006,9 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ConvertSavedModelObjectGraph(
   }
 
   specs.convert_all_functions_to_mlir = true;
-  TF_ASSIGN_OR_RETURN(
-      module, ConvertGraphToMlir(graph, debug_info, graph.flib_def(), specs,
-                                 module->getContext()));
+  TF_ASSIGN_OR_RETURN(module, tensorflow::tf2xla::v2::ConvertGraphToTfExecutor(
+                                  graph, debug_info, graph.flib_def(), specs,
+                                  module->getContext()));
 
   if (!saved_model->meta_graph_def().has_object_graph_def()) {
     return errors::InvalidArgument(
@@ -1126,10 +1066,13 @@ class SimpleSavedModelMLIRImportInput : public SavedModelMLIRImportInput {
 
     if (import_options.upgrade_legacy) {
       // TODO(jpienaar): Remove need to const_cast.
-      TF_RETURN_IF_ERROR(UpgradeLegacyGraph(
-          graph.get(),
-          const_cast<FunctionLibraryDefinition*>(&graph->flib_def()),
-          /*restrict_functionalization_to_compiled_nodes=*/false));
+      TF_RETURN_WITH_CONTEXT_IF_ERROR(
+          FunctionalizeControlFlow(
+              graph.get(),
+              const_cast<FunctionLibraryDefinition*>(&graph->flib_def()),
+              NodeFilter{},
+              /*include_functions=*/true),
+          tensorflow::kFunctionalizeControlFlowFailureMessage);
     }
 
     return SimpleSavedModelMLIRImportInput(meta_graph_def, debug_info,
@@ -1438,9 +1381,9 @@ SavedModelSignatureDefImporterLite::ConvertGraph(
   TF_ASSIGN_OR_RETURN(const auto* subgraph, input_.GetSubGraph(name, specs));
 
   // Convert sub-graph to MLIR module.
-  return ConvertGraphToMlir(*subgraph, input_.debug_info(),
-                            subgraph->flib_def(), specs, module_->getContext(),
-                            tf_name_to_mlir_name);
+  return tensorflow::tf2xla::v2::ConvertGraphToTfExecutor(
+      *subgraph, input_.debug_info(), subgraph->flib_def(), specs,
+      module_->getContext(), tf_name_to_mlir_name);
 }
 
 Status SavedModelSignatureDefImporterLite::ConvertSignature(
@@ -1759,31 +1702,8 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ConvertGraphdefToMlir(
   }
   TF_RETURN_IF_ERROR(ConvertGraphDefToGraph(
       options, std::move(preprocessed_graphdef), &graph));
-  return ConvertGraphToMlir(graph, debug_info, graph.flib_def(), specs,
-                            context);
-}
-
-absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ConvertGraphToMlir(
-    const Graph& graph, const GraphDebugInfo& debug_info,
-    const FunctionLibraryDefinition& flib_def, const GraphImportConfig& specs,
-    mlir::MLIRContext* context,
-    std::unordered_map<std::string, std::string>* tf_name_to_mlir_name) {
   return tensorflow::tf2xla::v2::ConvertGraphToTfExecutor(
-      graph, debug_info, flib_def, specs, context, tf_name_to_mlir_name);
-}
-
-absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ConvertFunctionToMlir(
-    const FunctionBody* fbody, const FunctionLibraryDefinition& flib_def,
-    mlir::MLIRContext* context) {
-  tensorflow::GraphDebugInfo dummy_debug_info;
-  tensorflow::GraphImportConfig specs;
-  specs.graph_func_name = fbody->record->fdef().signature().name();
-  specs.enable_shape_inference = false;
-  specs.graph_as_function = true;
-  for (const auto* control_ret_node : fbody->control_ret_nodes)
-    specs.control_outputs.push_back(control_ret_node->name());
-  return ConvertGraphToMlir(*fbody->graph, dummy_debug_info, flib_def, specs,
-                            context);
+      graph, debug_info, graph.flib_def(), specs, context);
 }
 
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> ConvertSavedModelToMlir(

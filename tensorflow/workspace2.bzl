@@ -150,18 +150,18 @@ def _tf_repositories():
     # LINT.IfChange
     tf_http_archive(
         name = "XNNPACK",
-        sha256 = "aa1bf776600366ee91861f9bd5470c2956b4af2d24c08afa0a374342c567bf67",
-        strip_prefix = "XNNPACK-d5d572e46ed3929fa3e67f6174192893943cf724",
-        urls = tf_mirror_urls("https://github.com/google/XNNPACK/archive/d5d572e46ed3929fa3e67f6174192893943cf724.zip"),
+        sha256 = "3306f4178c8594b689165d385e644f03a3154c3be044f6ae36dd170fbf182cf5",
+        strip_prefix = "XNNPACK-983d013300f19fd3f4e33220b6401408e97a8d12",
+        urls = tf_mirror_urls("https://github.com/google/XNNPACK/archive/983d013300f19fd3f4e33220b6401408e97a8d12.zip"),
     )
     # LINT.ThenChange(//tensorflow/lite/tools/cmake/modules/xnnpack.cmake)
 
     # XNNPack dependency.
     tf_http_archive(
         name = "KleidiAI",
-        sha256 = "6682b7a2795c711c1dd23ada552675b6514523e991043753648f2cad826f588f",
-        strip_prefix = "kleidiai-382b07835c43fcb0401cb4dab3c8fb85eaf187b6",
-        urls = tf_mirror_urls("https://gitlab.arm.com/kleidi/kleidiai/-/archive/382b07835c43fcb0401cb4dab3c8fb85eaf187b6/kleidiai-382b07835c43fcb0401cb4dab3c8fb85eaf187b6.zip"),
+        sha256 = "ad37707084a6d4ff41be10cbe8540c75bea057ba79d0de6c367c1bfac6ba0852",
+        strip_prefix = "kleidiai-40a926833857fb64786e02f97703e42b1537cb57",
+        urls = tf_mirror_urls("https://gitlab.arm.com/kleidi/kleidiai/-/archive/40a926833857fb64786e02f97703e42b1537cb57/kleidiai-40a926833857fb64786e02f97703e42b1537cb57.zip"),
     )
 
     tf_http_archive(
@@ -180,18 +180,19 @@ def _tf_repositories():
 
     tf_http_archive(
         name = "cpuinfo",
-        sha256 = "ca31f17a86e4db01b5fc05efa1807ddc84c02ba4611464b67e185e8210bf096b",
-        strip_prefix = "cpuinfo-1e83a2fdd3102f65c6f1fb602c1b320486218a99",
-        urls = tf_mirror_urls("https://github.com/pytorch/cpuinfo/archive/1e83a2fdd3102f65c6f1fb602c1b320486218a99.zip"),
+        sha256 = "52e0ffd7998d8cb3a927d8a6e1145763744d866d2be09c4eccea27fc157b6bb0",
+        strip_prefix = "cpuinfo-cebb0933058d7f181c979afd50601dc311e1bf8c",
+        patch_file = ["//third_party/cpuinfo:cpuinfo_ppc64le_support.patch"],
+        urls = tf_mirror_urls("https://github.com/pytorch/cpuinfo/archive/cebb0933058d7f181c979afd50601dc311e1bf8c.zip"),
     )
 
     tf_http_archive(
         name = "cudnn_frontend_archive",
         build_file = "//third_party:cudnn_frontend.BUILD",
         patch_file = ["//third_party:cudnn_frontend_header_fix.patch"],
-        sha256 = "bd1037f8e7218d0d44ff2ff11d0c95175a5a27a82d8ea92879e23eafd6d5df02",
-        strip_prefix = "cudnn-frontend-1.6.1",
-        urls = tf_mirror_urls("https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v1.6.1.zip"),
+        sha256 = "5f77784dc3ccbca7aca5ea0b5a6e31b95aa85023c5942d22be5fa8dd6c339d81",
+        strip_prefix = "cudnn-frontend-1.8.0",
+        urls = tf_mirror_urls("https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v1.8.0.zip"),
     )
 
     tf_http_archive(
@@ -228,6 +229,10 @@ def _tf_repositories():
             "//third_party/mkl_dnn:onednn_acl_fp32_bf16_reorder.patch",
             "//third_party/mkl_dnn:onednn_acl_bf16_capability_detection_for_ubuntu20.04.patch",
             "//third_party/mkl_dnn:onednn_acl_indirect_conv.patch",
+            "//third_party/mkl_dnn:onednn_acl_allow_blocked_weight_format_for_matmul_primitive.patch",
+            "//third_party/mkl_dnn:onednn_acl_fix_segfault_during_postop_execute.patch",
+            "//third_party/mkl_dnn:onednn_acl_add_bf16_platform_support_check.patch",
+            "//third_party/mkl_dnn:onednn_acl_add_sbgemm_matmul_primitive_definition.patch",
         ],
         sha256 = "2f76b407ef8893cca71340f88cd800019a1f14f8ac1bbdbb89a84be1370b52e3",
         strip_prefix = "oneDNN-3.2.1",
@@ -395,15 +400,6 @@ def _tf_repositories():
     )
 
     tf_http_archive(
-        name = "nsync",
-        patch_file = ["//third_party:nsync.patch"],
-        sha256 = "1d63e967973733d2c97e841e3c05fac4d3fa299f01d14c86f2695594c7a4a2ec",
-        strip_prefix = "nsync-1.29.2",
-        system_build_file = "//third_party/systemlibs:nsync.BUILD",
-        urls = tf_mirror_urls("https://github.com/google/nsync/archive/1.29.2.tar.gz"),
-    )
-
-    tf_http_archive(
         name = "com_google_googletest",
         sha256 = "81964fe578e9bd7c94dfdb09c8e4d6e6759e19967e397dbea48d1c10e45d0df2",
         strip_prefix = "googletest-release-1.12.1",
@@ -427,10 +423,10 @@ def _tf_repositories():
     tf_http_archive(
         name = "curl",
         build_file = "//third_party:curl.BUILD",
-        sha256 = "9c6db808160015f30f3c656c0dec125feb9dc00753596bf858a272b5dd8dc398",
-        strip_prefix = "curl-8.6.0",
+        sha256 = "264537d90e58d2b09dddc50944baf3c38e7089151c8986715e2aaeaaf2b8118f",
+        strip_prefix = "curl-8.11.0",
         system_build_file = "//third_party/systemlibs:curl.BUILD",
-        urls = tf_mirror_urls("https://curl.se/download/curl-8.6.0.tar.gz"),
+        urls = tf_mirror_urls("https://curl.se/download/curl-8.11.0.tar.gz"),
     )
 
     # WARNING: make sure ncteisen@ and vpai@ are cc-ed on any CL to change the below rule
@@ -732,9 +728,9 @@ def _tf_repositories():
 
     tf_http_archive(
         name = "rules_android_ndk",
-        sha256 = "b29409496439cdcdb50a8e161c4953ca78a548e16d3ee729a1b5cd719ffdacbf",
-        strip_prefix = "rules_android_ndk-81ec8b79dc50ee97e336a25724fdbb28e33b8d41",
-        urls = tf_mirror_urls("https://github.com/bazelbuild/rules_android_ndk/archive/81ec8b79dc50ee97e336a25724fdbb28e33b8d41.zip"),
+        sha256 = "0ab5ddae72dff0dfae92a31a0704d4543e818e360786e44d2093a6b8ff5e8fda",
+        strip_prefix = "rules_android_ndk-461e8c99b7f06bc86a15317505d48fc0decd7dcc",
+        urls = tf_mirror_urls("https://github.com/bazelbuild/rules_android_ndk/archive/461e8c99b7f06bc86a15317505d48fc0decd7dcc.zip"),
     )
 
     # Apple and Swift rules.
@@ -797,7 +793,6 @@ def _tf_repositories():
         sha256 = "c7ab64b1ccf9a678694a89035a8c865a693e4e872803778f91f0965c2f281d78",
         strip_prefix = "pybind11_protobuf-80f3440cd8fee124e077e2e47a8a17b78b451363",
         patch_file = [
-            "//third_party/pybind11_protobuf:protobuf.patch",
             "//third_party/pybind11_protobuf:remove_license.patch",
         ],
     )

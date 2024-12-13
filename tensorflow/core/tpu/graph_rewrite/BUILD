@@ -262,6 +262,7 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core/framework:node_def_proto_cc",
         "//tensorflow/core/framework:types_proto_cc",
+        "@com_google_absl//absl/status",
     ],
 )
 
@@ -398,6 +399,7 @@ cc_library(
     srcs = ["tpu_embedding_software_deduplication_rewrite_pass.cc"],
     hdrs = ["tpu_embedding_software_deduplication_rewrite_pass.h"],
     deps = [
+        ":tpu_embedding_rewrite_pass_utils",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_internal",
         "//tensorflow/core:framework",
@@ -406,7 +408,6 @@ cc_library(
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/protobuf/tpu:tpu_embedding_configuration_proto_cc",
         "//tensorflow/core/tpu:tpu_embedding_configuration_utils",
-        "//tensorflow/core/tpu/graph_rewrite:tpu_embedding_rewrite_pass_utils",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",

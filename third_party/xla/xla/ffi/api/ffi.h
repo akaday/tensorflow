@@ -477,6 +477,22 @@ class AnyBuffer {
 
   void* untyped_data() const { return buf_->data; }
 
+  template <typename T>
+  T* typed_data() const {
+    assert(internal::NativeTypeToCApiDataType<T>() == buf_->dtype &&
+           "Template type must match the underlying buffer dtype");
+    return reinterpret_cast<T*>(buf_->data);
+  }
+
+  template <typename T>
+  T* reinterpret_data() const {
+    assert(sizeof(T) == ByteWidth(element_type()) &&
+           !(reinterpret_cast<std::uintptr_t>(buf_->data) % alignof(T)) &&
+           "Requested type must have the same byte width and alignment as the "
+           "underlying buffer type");
+    return reinterpret_cast<T*>(buf_->data);
+  }
+
  private:
   const XLA_FFI_Buffer* buf_;
 };
@@ -1240,6 +1256,23 @@ class ThreadPool {
       // recursive work scheduling more difficult.
       task(data);
     }
+  }
+
+  int64_t num_threads() const {
+    int64_t num_threads = 0;
+
+    XLA_FFI_ThreadPool_NumThreads_Args args;
+    args.struct_size = XLA_FFI_ThreadPool_NumThreads_Args_STRUCT_SIZE;
+    args.extension_start = nullptr;
+    args.ctx = ctx_;
+    args.num_threads = &num_threads;
+
+    // Silently ignore errors if we can't get the number of threads.
+    if (XLA_FFI_Error* error = api_->XLA_FFI_ThreadPool_NumThreads(&args)) {
+      internal::DestroyError(api_, error);
+    }
+
+    return num_threads;
   }
 
  private:

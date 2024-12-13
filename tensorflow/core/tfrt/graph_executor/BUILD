@@ -15,6 +15,7 @@ package_group(
         # copybara:uncomment "//cloud/ai/platform/prediction/...",
         # copybara:uncomment "//learning/brain/experimental/tfrt/native_lowering/...",
         # copybara:uncomment "//learning/brain/tfrt/...",
+        # copybara:uncomment "//learning/infra/mira/experimental/orbax_model/...",
         # copybara:uncomment "//learning/serving/servables/tfrt/...",
         # copybara:uncomment "//smartass/brain/inference/...",
         # copybara:uncomment "//tensorflow/compiler/mlir/tfrt/...",
@@ -78,6 +79,7 @@ cc_library(
         "//tensorflow/compiler/mlir/tensorflow:error_util",
         "//tensorflow/compiler/mlir/tensorflow:import_model",
         "//tensorflow/compiler/mlir/tensorflow:mlir_roundtrip_flags",
+        "//tensorflow/compiler/mlir/tf2xla/api/v2:graph_to_tf_executor",
         "//tensorflow/compiler/mlir/tfrt:backend_compiler",
         "//tensorflow/compiler/mlir/tfrt:import_model",
         "//tensorflow/compiler/mlir/tfrt:tfrt_compile_options",
@@ -155,6 +157,7 @@ tf_cc_test(
     srcs = ["graph_executor_test.cc"],
     tags = ["no_oss"],
     deps = [
+        ":config",
         ":graph_execution_options",
         ":graph_executor",
         "//tensorflow/cc:array_ops",

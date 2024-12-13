@@ -8,9 +8,8 @@ load(
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
-        "//tensorflow/cc/saved_model:__subpackages__",
         "//tensorflow/core:__subpackages__",
-        "@local_tsl//tsl:__subpackages__",
+        "//tensorflow/python/profiler/internal:__pkg__",
     ],
     licenses = ["notice"],
 )
@@ -134,11 +133,6 @@ tf_proto_library(
     protodeps = [
         "@local_xla//xla/tsl/protobuf:error_codes_proto_impl",
     ],
-    visibility = [
-        "//tensorflow/core:__subpackages__",
-        "//tensorflow/core/protobuf:__subpackages__",
-        "@local_tsl//tsl:__subpackages__",
-    ],
     exports = ["@local_xla//xla/tsl/protobuf:error_codes_proto_impl"],
 )
 
@@ -217,7 +211,7 @@ filegroup(
     srcs = [
         "status.h",
     ],
-    visibility = ["//tensorflow/core:__pkg__"],
+    visibility = ["//visibility:private"],
 )
 
 filegroup(

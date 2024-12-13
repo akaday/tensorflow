@@ -43,7 +43,7 @@ class TritonGemmTest : public GpuCodegenTest {
     }
   }
 
-  DebugOptions GetDebugOptionsForTest() override {
+  DebugOptions GetDebugOptionsForTest() const override {
     DebugOptions debug_options = HloTestBase::GetDebugOptionsForTest();
     debug_options.set_xla_gpu_cublas_fallback(false);
     return debug_options;
@@ -134,17 +134,9 @@ ENTRY e {
   EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-3, /*arel=*/1e-3}));
 }
 
-class TritonSoftmaxTest : public GpuCodegenTest {
- public:
-  DebugOptions GetDebugOptionsForTest() override {
-    DebugOptions debug_options = GpuCodegenTest::GetDebugOptionsForTest();
-    debug_options
-        .set_xla_gpu_experimental_enable_triton_softmax_priority_fusion(true);
-    return debug_options;
-  }
-};
+using TritonNormalizationTest = GpuCodegenTest;
 
-TEST_F(TritonSoftmaxTest,
+TEST_F(TritonNormalizationTest,
        CanEmitDiamondWithInputNumberOfElementsLargerThanInt32Max) {
   const std::string hlo_text = R"(
 HloModule softmax

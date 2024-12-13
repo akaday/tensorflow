@@ -12,7 +12,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <optional>
 #include <string>
 #include <utility>
 
@@ -58,7 +57,7 @@ namespace {
 // StableHLO --> VHLO types
 //===----------------------------------------------------------------------===//
 
-std::optional<Value> MaterializeIllegalCast(OpBuilder &builder, Type type,
+Value MaterializeIllegalCast(OpBuilder &builder, Type type,
                                             ValueRange inputs, Location loc) {
   return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
       ->getResult(0);

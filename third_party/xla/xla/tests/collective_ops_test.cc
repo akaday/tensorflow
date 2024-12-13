@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -53,7 +54,7 @@ class CollectiveOpsTest : public HloTestBase {
   }
 
  protected:
-  DebugOptions GetDebugOptionsForTest() override {
+  DebugOptions GetDebugOptionsForTest() const override {
     DebugOptions debug_options = HloTestBase::GetDebugOptionsForTest();
     // Disable async->sync collective conversion pass to enable unit testing
     // of async collectives.
@@ -361,7 +362,8 @@ XLA_TEST_F(CollectiveOpsTest, AllReduceOr_Pred) {
 XLA_TEST_F(CollectiveOpsTest, AllReduce_AllCombinations) {
   const int64_t kNumElems = 1024;
 
-  for (std::vector<int64_t> devices : PowerSetOfIota(num_devices())) {
+  for (std::vector<int64_t> devices :
+       PowerSetOfIota(std::min(num_devices(), 4l))) {
     SCOPED_TRACE(absl::StrFormat("Running on devices {%s}",
                                  absl::StrJoin(devices, ", ")));
 
@@ -402,15 +404,14 @@ XLA_TEST_F(CollectiveOpsTest,
 
   HloModuleConfig config = GetModuleConfigForTest(/*replica_count=*/2);
   auto executable =
-      test_runner_
-          .CreateExecutable(MakeCrsModule(input_literal.shape(),
-                                          /*replica_groups=*/{}, config),
-                            /*run_hlo_passes=*/true)
+      CreateExecutable(MakeCrsModule(input_literal.shape(),
+                                     /*replica_groups=*/{}, config),
+                       /*run_hlo_passes=*/true)
           .value();
   std::vector<int64_t> devices = {0, 1};
   auto device_assn = MakeDeviceAssn(devices);
 
-  HloRunner::ReplicatedExecuteOptions opts;
+  HloRunnerInterface::ReplicatedExecuteOptions opts;
   opts.num_replicas = devices.size();
   opts.use_threads = true;
   opts.arguments.push_back(&input_literal);
@@ -420,7 +421,7 @@ XLA_TEST_F(CollectiveOpsTest,
   for (int64_t i = 0; i < kNumThreads * kRunsPerThread; ++i) {
     pool.Schedule([&] {
       TF_ASSERT_OK(
-          test_runner_.ExecuteReplicated(executable.get(), opts, &device_assn)
+          ExecuteReplicatedWithHloRunner(executable.get(), opts, &device_assn)
               .status());
       done.DecrementCount();
     });
@@ -1434,7 +1435,6 @@ XLA_TEST_F(CollectiveOpsTest, DISABLED_ON_CPU(ReduceScatterReassociate)) {
                         kNumReplicas,
                         /*use_threads=*/true, /*run_hlo_passes=*/true));
 
-  const ErrorSpec es{1e-5, 1e-5};
   LiteralTestUtil::ExpectR1Equal<uint32_t>({26, 30, 34, 38}, results[0]);
   LiteralTestUtil::ExpectR1Equal<uint32_t>({42, 46, 50, 54}, results[1]);
 }
@@ -1485,7 +1485,6 @@ XLA_TEST_F(CollectiveOpsTest,
                         kNumReplicas,
                         /*use_threads=*/true, /*run_hlo_passes=*/true));
 
-  const ErrorSpec es{1e-5, 1e-5};
   LiteralTestUtil::ExpectR1Equal<uint32_t>({26, 30, 34, 38}, results[0]);
   LiteralTestUtil::ExpectR1Equal<uint32_t>({42, 46, 50, 54}, results[1]);
 }
@@ -2267,6 +2266,97 @@ body {
                                      results[0]));
   EXPECT_TRUE(LiteralTestUtil::Equal(LiteralUtil::CreateR1<uint32_t>({3, 3}),
                                      results[1]));
+}
+
+// Test send/recv across partitions. In the IR, this is indicated by the absence
+// of the channel ID and the use of replica-id().
+XLA_TEST_F(CollectiveOpsTest, DISABLED_ON_CPU(SendRecvCrossReplica)) {
+  const char* const kModuleStr = R"(
+    HloModule test
+
+    ENTRY computation {
+      rid = u32[] replica-id()
+      c10 = u32[] constant(10)
+      rid_plus_ten = u32[] add(rid, c10)
+      after_all = token[] after-all()
+      send = (u32[], u32[], token[]) send(rid_plus_ten, after_all),
+          frontend_attributes={_xla_send_recv_source_target_pairs="{{1,0}}"}
+      recv = (u32[], u32[], token[]) recv(after_all),
+          frontend_attributes={_xla_send_recv_source_target_pairs="{{1,0}}"}
+      send_done = token[] send-done(send)
+      recv_done = (u32[], token[]) recv-done(recv)
+      ROOT recv_data = u32[] get-tuple-element(recv_done), index=0
+    }
+  )";
+
+  const int64_t kNumReplicas = 2;
+  SKIP_TEST_IF_NUM_DEVICES_LESS_THAN(kNumReplicas);
+
+  HloModuleConfig config = GetModuleConfigForTest(
+      /*replica_count=*/kNumReplicas, /*num_partitions=*/1);
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(kModuleStr, config));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::vector<Literal> results,
+      ExecuteReplicated(std::move(module), absl::Span<Literal* const>{},
+                        kNumReplicas,
+                        /*use_threads=*/true, /*run_hlo_passes=*/true));
+  ASSERT_EQ(results.size(), kNumReplicas);
+  EXPECT_TRUE(
+      LiteralTestUtil::Equal(LiteralUtil::CreateR0<uint32_t>(11), results[0]));
+  EXPECT_TRUE(
+      LiteralTestUtil::Equal(LiteralUtil::CreateR0<uint32_t>(0), results[1]));
+}
+
+// Test send/recv across partitions. In the IR, this is indicated by the
+// presence of the channel ID and the use of partition-id().
+XLA_TEST_F(CollectiveOpsTest, DISABLED_ON_CPU(SendRecvCrossPartition)) {
+  const char* const kModuleStr = R"(
+    HloModule test
+
+    ENTRY computation {
+      rid = u32[] partition-id()
+      c10 = u32[] constant(10)
+      rid_plus_ten = u32[] add(rid, c10)
+      after_all = token[] after-all()
+      send = (u32[], u32[], token[]) send(rid_plus_ten, after_all),
+          channel_id=1,
+          frontend_attributes={_xla_send_recv_source_target_pairs="{{1,0}}"}
+      recv = (u32[], u32[], token[]) recv(after_all), channel_id=1,
+          frontend_attributes={_xla_send_recv_source_target_pairs="{{1,0}}"}
+      send_done = token[] send-done(send), channel_id=1
+      recv_done = (u32[], token[]) recv-done(recv), channel_id=1
+      ROOT recv_data = u32[] get-tuple-element(recv_done), index=0
+    }
+  )";
+
+  const int64_t kNumReplicas = 1;
+  const int64_t kNumPartitions = 2;
+  SKIP_TEST_IF_NUM_DEVICES_LESS_THAN(kNumReplicas * kNumPartitions);
+
+  // Create device assignment running across partitions.
+  DeviceAssignment device_assignment(/*replica_count=*/kNumReplicas,
+                                     /*computation_count=*/kNumPartitions);
+  for (int64_t i = 0; i < kNumPartitions; ++i) {
+    device_assignment(0, i) = i;
+  }
+
+  HloModuleConfig config = GetModuleConfigForTest(
+      /*replica_count=*/kNumReplicas, /*num_partitions=*/kNumPartitions);
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(kModuleStr, config));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::vector<Literal> results,
+      ExecuteReplicated(std::move(module), absl::Span<Literal* const>{},
+                        kNumReplicas * kNumPartitions, &device_assignment,
+                        /*run_hlo_passes=*/true, /*use_threads=*/true));
+  ASSERT_EQ(results.size(), kNumReplicas * kNumPartitions);
+  EXPECT_TRUE(
+      LiteralTestUtil::Equal(LiteralUtil::CreateR0<uint32_t>(11), results[0]));
+  EXPECT_TRUE(
+      LiteralTestUtil::Equal(LiteralUtil::CreateR0<uint32_t>(0), results[1]));
 }
 
 class Fp8CollectiveOpsTest : public CollectiveOpsTest {

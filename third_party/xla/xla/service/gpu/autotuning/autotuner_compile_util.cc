@@ -100,7 +100,7 @@ AutotunerCompileUtil::AutotunerCompileUtil(const AutotuneConfig& config,
   opts_.set_xla_gpu_kernel_cache_file("");
 }
 
-absl::StatusOr<std::optional<AutotunerCompileUtil::ProfilingOutput>>
+absl::StatusOr<AutotunerCompileUtil::ProfilingOutput>
 AutotunerCompileUtil::ProfileExecutable(
     Executable* executable, se::Stream* stream,
     absl::Span<se::DeviceMemoryBase const> input_buffers,
@@ -110,18 +110,8 @@ AutotunerCompileUtil::ProfileExecutable(
         ExecutionInputsFromBuffers(input_buffers, input_shapes);
     // Warmup: in and out buffers are reused while probing different configs,
     // so GPU caches should be in some comparable states during measurements.
-    absl::StatusOr<ExecutionOutput> execution_output =
-        Execute(*executable, std::move(execution_inputs));
-    if (!execution_output.ok()) {
-      // Treat register allocation error gracefully. If the compilation happens
-      // with the driver during execution then the error could surface here.
-      // It's enough to check this once here.
-      if (execution_output.status().code() ==
-          absl::StatusCode::kResourceExhausted) {
-        return {std::nullopt};
-      }
-      return execution_output.status();
-    }
+    TF_ASSIGN_OR_RETURN(ExecutionOutput execution_output,
+                        Execute(*executable, std::move(execution_inputs)));
 
     TF_RETURN_IF_ERROR(stream->BlockHostUntilDone());
   }
@@ -134,9 +124,8 @@ AutotunerCompileUtil::ProfileExecutable(
   TF_ASSIGN_OR_RETURN(
       ExecutionOutput execution_output,
       Execute(*executable, std::move(execution_inputs), &profile));
-  return std::make_optional<ProfilingOutput>(
-      absl::Nanoseconds(profile.compute_time_ns()),
-      execution_output.Commit().ConsumeResult());
+  return ProfilingOutput(absl::Nanoseconds(profile.compute_time_ns()),
+                         execution_output.Commit().ConsumeResult());
 }
 
 absl::StatusOr<std::unique_ptr<Executable>> AutotunerCompileUtil::Compile(

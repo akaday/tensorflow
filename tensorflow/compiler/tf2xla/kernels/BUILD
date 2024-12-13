@@ -1,8 +1,8 @@
-load("@local_tsl//tsl/platform:build_config_root.bzl", "if_static")
 load(
     "@local_xla//xla/tsl:tsl.bzl",
     "check_deps",
 )
+load("@local_xla//xla/tsl/platform:build_config_root.bzl", "if_static")
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_cc_test",
@@ -19,9 +19,8 @@ load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
-        # copybara:uncomment "//learning/infra/mira:__subpackages__",
-        "//third_party/cloud_tpu/inference_converter:__subpackages__",
         "//tensorflow/compiler/tf2xla:internal",
+        "//third_party/cloud_tpu/inference_converter:__subpackages__",
     ],
     licenses = ["notice"],
 )
@@ -221,11 +220,12 @@ tf_cuda_library(
         "@local_xla//xla/service:custom_call_status",
         "@local_xla//xla/service:custom_call_target_registry",
         "@local_xla//xla/service:hlo_proto_cc",
-        "@local_xla//xla/stream_executor",
+        "@local_xla//xla/stream_executor:device_memory",
+        "@local_xla//xla/stream_executor:platform",
+        "@local_xla//xla/stream_executor:platform_manager",
+        "@local_xla//xla/stream_executor:stream",
+        "@local_xla//xla/stream_executor:stream_executor_h",
         "@local_xla//xla/stream_executor:stream_finder",
-        "@local_xla//xla/stream_executor/gpu:gpu_executor_header",
-        "@local_xla//xla/stream_executor/gpu:gpu_stream_header",
-        "@local_xla//xla/stream_executor/gpu:gpu_types_header",
         "@local_xla//xla/tsl/lib/strings:proto_serialization",
     ],
     alwayslink = 1,
@@ -369,6 +369,7 @@ cc_library(
         "@local_xla//xla/service:hlo_proto_cc",
         "@stablehlo//:chlo_ops",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_serialization",
         "@stablehlo//:vhlo_ops",
     ],

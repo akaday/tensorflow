@@ -26,15 +26,18 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "xla/backends/gpu/collectives/gpu_clique_key.h"
 #include "xla/ffi/api/c_api.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/service/buffer_assignment.h"
@@ -45,13 +48,15 @@ limitations under the License.
 #include "xla/service/gpu/matmul_utils.h"
 #include "xla/service/gpu/runtime/custom_call_thunk.h"
 #include "xla/service/gpu/runtime/dynamic_slice_thunk.h"
-#include "xla/service/gpu/runtime/nccl_api.h"
-#include "xla/service/gpu/runtime/nccl_clique_key.h"
 #include "xla/service/gpu/runtime/nccl_collective_thunk.h"
 #include "xla/service/gpu/runtime/thunk.h"
+#include "xla/shape.h"
 #include "xla/stream_executor/command_buffer.h"
 #include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/dnn.h"
+#include "xla/stream_executor/gpu/gpu_blas_lt.h"
 #include "xla/stream_executor/kernel.h"
+#include "xla/stream_executor/memory_allocation.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
 
@@ -879,37 +884,33 @@ class CuDnnCmd : public TracedCommandBufferCmd {
 class CustomCallCmd : public CommandBufferCmd {
  public:
   using Slice = CustomCallThunk::Slice;
-  using Stream = CustomCallThunk::Stream;
   using CustomCallTarget = CustomCallThunk::CustomCallTarget;
   using AttributesMap = CustomCallThunk::AttributesMap;
 
   // This is a legacy custom call API that is discouraged, and will be
   // deprecated once XLA:FFI mechanism is ready.
-  //
-  // TODO(b/323534971): We have an ODR violation somewhere in Tensorflow/XLA and
-  // include this header with different set of defines and CustomCallTarget
-  // has different meaning in different translation units. We need to get rid of
-  // GOOGLE_CUDA defines all over XLA to fix this! As a workaround just keep
-  // constructor in a header file.
-  CustomCallCmd(ExecutionStreamId execution_stream_id,
+  CustomCallCmd(ExecutionStreamId execution_stream_id, std::string target_name,
                 CustomCallTarget call_target,
                 std::vector<std::optional<Slice>> operands,
                 std::vector<std::optional<Slice>> results,
                 absl::string_view opaque)
       : CommandBufferCmd(CommandBufferCmdType::kCustomCallCmd,
                          execution_stream_id),
+        target_name_(std::move(target_name)),
         call_target_(std::move(call_target)),
         opaque_(opaque),
         operands_(std::move(operands)),
         results_(std::move(results)) {}
 
-  CustomCallCmd(ExecutionStreamId execution_stream_id, XLA_FFI_Handler* handler,
+  CustomCallCmd(ExecutionStreamId execution_stream_id, std::string target_name,
+                XLA_FFI_Handler* handler,
                 std::vector<std::optional<Slice>> operands,
                 std::vector<std::optional<Slice>> results,
                 AttributesMap attributes,
                 const HloComputation* called_computation)
       : CommandBufferCmd(CommandBufferCmdType::kCustomCallCmd,
                          execution_stream_id),
+        target_name_(std::move(target_name)),
         handler_(handler),
         attributes_(std::move(attributes)),
         called_computation_(called_computation),
@@ -930,6 +931,8 @@ class CustomCallCmd : public CommandBufferCmd {
   absl::Status RecordXlaFfiCall(const Thunk::ExecuteParams& execute_param,
                                 const RecordParams& record_params,
                                 se::CommandBuffer* command_buffer);
+
+  std::string target_name_;
 
   // This is a legacy custom call API that is discouraged, and will be
   // deprecated once XLA:FFI mechanism is ready.
@@ -981,7 +984,7 @@ class CollectiveCmd : public CommandBufferCmd {
  public:
   CollectiveCmd(CommandBufferCmdType cmd_type,
                 ExecutionStreamId execution_stream_id,
-                ExecutionStreamId async_from_stream_id, NcclApi* nccl_api,
+                ExecutionStreamId async_from_stream_id,
                 NcclCollectiveConfig config);
 
   absl::Status Prepare(const Thunk::PrepareParams& params,
@@ -1002,8 +1005,8 @@ class CollectiveCmd : public CommandBufferCmd {
     return async_from_stream_id_ != execution_stream_id();
   }
 
-  NcclStreamId nccl_stream_id() {
-    return xla::gpu::GetStreamId(IsAsync(), GetAsyncStreamKind());
+  CollectiveStreamId nccl_stream_id() {
+    return xla::gpu::GetCollectiveStreamId(IsAsync(), GetAsyncStreamKind());
   }
 
   ExecutionStreamId async_from_stream_id() const {
@@ -1015,12 +1018,10 @@ class CollectiveCmd : public CommandBufferCmd {
       const CommandBufferCmd::RecordParams& record_params);
 
  protected:
-  NcclApi* nccl_api() const { return nccl_api_; }
   const NcclCollectiveConfig& config() const { return config_; }
 
  private:
   ExecutionStreamId async_from_stream_id_;
-  NcclApi* nccl_api_;
   NcclCollectiveConfig config_;
 };
 
@@ -1031,7 +1032,7 @@ class CollectiveCmd : public CommandBufferCmd {
 class AllReduceCmd : public CollectiveCmd {
  public:
   AllReduceCmd(ExecutionStreamId execution_stream_id,
-               ExecutionStreamId async_from_stream_id, NcclApi* nccl_api,
+               ExecutionStreamId async_from_stream_id,
                NcclCollectiveConfig config, ReductionKind reduction_kind,
                absl::Span<const NcclCollectiveThunk::Buffer> buffers);
 
@@ -1057,7 +1058,7 @@ class AllReduceCmd : public CollectiveCmd {
 class ReduceScatterCmd : public CollectiveCmd {
  public:
   ReduceScatterCmd(ExecutionStreamId execution_stream_id,
-                   ExecutionStreamId async_from_stream_id, NcclApi* nccl_api,
+                   ExecutionStreamId async_from_stream_id,
                    NcclCollectiveConfig config, ReductionKind reduction_kind,
                    absl::Span<const NcclCollectiveThunk::Buffer> buffers);
 
@@ -1083,7 +1084,7 @@ class ReduceScatterCmd : public CollectiveCmd {
 class AllToAllCmd : public CollectiveCmd {
  public:
   AllToAllCmd(ExecutionStreamId execution_stream_id,
-              ExecutionStreamId async_from_stream_id, NcclApi* nccl_api,
+              ExecutionStreamId async_from_stream_id,
               NcclCollectiveConfig config, bool has_split_dimension,
               absl::Span<const NcclCollectiveThunk::Buffer> buffers);
 
@@ -1109,7 +1110,7 @@ class AllToAllCmd : public CollectiveCmd {
 class AllGatherCmd : public CollectiveCmd {
  public:
   AllGatherCmd(ExecutionStreamId execution_stream_id,
-               ExecutionStreamId async_from_stream_id, NcclApi* nccl_api,
+               ExecutionStreamId async_from_stream_id,
                NcclCollectiveConfig config,
                absl::Span<const NcclCollectiveThunk::Buffer> buffers);
 
@@ -1135,7 +1136,7 @@ class CollectiveBroadcastCmd : public CollectiveCmd {
  public:
   CollectiveBroadcastCmd(ExecutionStreamId execution_stream_id,
                          ExecutionStreamId async_from_stream_id,
-                         NcclApi* nccl_api, NcclCollectiveConfig config,
+                         NcclCollectiveConfig config,
                          absl::Span<const NcclCollectiveThunk::Buffer> buffers);
 
   absl::Status Record(const Thunk::ExecuteParams& execute_params,

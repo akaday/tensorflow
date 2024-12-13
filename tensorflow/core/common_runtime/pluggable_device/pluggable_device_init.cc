@@ -15,8 +15,6 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/pluggable_device/pluggable_device_init.h"
 
-#include <string>
-
 #include "xla/stream_executor/platform_manager.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/status.h"
@@ -24,7 +22,8 @@ limitations under the License.
 
 namespace tensorflow {
 
-Status ValidatePluggableDeviceMachineManager(const string& platform_name) {
+absl::Status ValidatePluggableDeviceMachineManager(
+    const string& platform_name) {
   return se::PlatformManager::PlatformWithName(platform_name).status();
 }
 

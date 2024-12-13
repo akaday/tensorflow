@@ -24,6 +24,7 @@ cc_library(
     deps = [
         ":device_type_proto_cc",
         "//tensorflow/compiler/mlir/tensorflow:dump_mlir_util",
+        "//tensorflow/compiler/mlir/tensorflow:serialize_mlir_module_utils",
         "//tensorflow/compiler/mlir/tf2xla/api/v1:compile_tf_graph",
         "//tensorflow/compiler/mlir/tf2xla/internal:compilation_timer",
         "//tensorflow/compiler/mlir/tf2xla/internal:legalize_tf_to_hlo",
@@ -123,7 +124,6 @@ cc_library(
     hdrs = ["cluster_tf.h"],
     visibility = [
         "//learning/serving/contrib/tfrt/mlir/saved_model_analysis:__pkg__",
-        "//tensorflow/compiler/mlir/tensorflow/transforms:__pkg__",
         "//tensorflow/compiler/mlir/tfrt:__pkg__",
         "//tensorflow/compiler/mlir/tfrt/transforms/ifrt:__pkg__",
         "//tensorflow/compiler/tf2xla:__pkg__",
@@ -190,7 +190,6 @@ cc_library(
     hdrs = ["tf_dialect_to_executor.h"],
     visibility = [
         "//learning/serving/contrib/tfrt/mlir/saved_model_analysis:__pkg__",
-        "//tensorflow/compiler/mlir/tensorflow/transforms:__pkg__",
         "//tensorflow/compiler/mlir/tfrt:__pkg__",
         "//tensorflow/compiler/tf2xla:__pkg__",
     ],
@@ -340,8 +339,11 @@ cc_library(
         "//tensorflow/compiler/mlir/tensorflow:tensorflow_types",
         "//tensorflow/compiler/mlir/tensorflow:translate_utils",
         "//tensorflow/compiler/mlir/tensorflow/translate:mlir_roundtrip_flags",
-        "//tensorflow/compiler/mlir/tensorflow/translate:node_order",
         "//tensorflow/compiler/mlir/tensorflow/translate:upgrade_graph",
+        "//tensorflow/compiler/mlir/tf2xla/internal:node_order",
+        "//tensorflow/compiler/tf2xla:functionalize_control_flow",
+        "//tensorflow/compiler/tf2xla:functionalize_control_flow_util",
+        "//tensorflow/compiler/tf2xla:tf2xla_defs",
         "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:framework",
         "//tensorflow/core:framework_internal",

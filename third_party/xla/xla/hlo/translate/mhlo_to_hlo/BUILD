@@ -1,9 +1,9 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library")
-load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_binary", "cc_library")
 load("//xla:xla.bzl", "xla_cc_test")
 load("//xla/tsl:tsl.bzl", "internal_visibility")
 load("//xla/tsl:tsl.default.bzl", "get_compatible_with_portable")
+load("//xla/tsl/platform:rules_cc.bzl", "cc_binary", "cc_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -50,6 +50,26 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:statusor",
+    ],
+)
+
+cc_library(
+    name = "literal_exporter",
+    srcs = ["literal_exporter.cc"],
+    hdrs = ["literal_exporter.h"],
+    deps = [
+        ":type_to_shape",
+        "//xla:array",
+        "//xla:literal",
+        "//xla:literal_util",
+        "//xla:shape_util",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@local_tsl//tsl/platform:errors",
     ],
 )
 
@@ -103,6 +123,7 @@ cc_library(
     deps = [
         ":attribute_exporter",
         ":layout_util",
+        ":literal_exporter",
         ":location_exporter",
         ":module_attributes_exporter",
         ":operator_writer_inc",
@@ -158,6 +179,7 @@ cc_library(
         "@llvm-project//mlir:TransformUtils",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:ml_dtypes",
+        "@local_tsl//tsl/platform:protobuf",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:types",
         "@stablehlo//:base",

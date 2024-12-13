@@ -37,11 +37,6 @@ def FloatElementsAttr : ElementsAttrBase<
 def ExtractSingleElementAsFloat : NativeCodeCall<
     "ExtractSingleElementAsFloat($_self.cast<ElementsAttr>())">;
 
-// Checks if the value has rank at most 'n'.
-class HasRankAtMost<int n> : Constraint<
-    CPred<"$0.getType().cast<ShapedType>().hasRank() && "
-          "$0.getType().cast<ShapedType>().getRank() <= " # n>>;
-
 // Checks if the value has rank 'n'.
 class HasRank<int n> : Constraint<
     CPred<"$0.getType().cast<ShapedType>().hasRank() && "
@@ -57,13 +52,6 @@ class IsBoolAttrEqual<string true_or_false> : Constraint<CPred<
 def FlattenTo1D : NativeCodeCall<"FlattenTo1D($0)">;
 
 def HasOneUse : Constraint<CPred<"$0.hasOneUse()">>;
-
-def HasSameStaticShapes : Constraint<
-    CPred<"$0.getType().cast<ShapedType>().hasStaticShape() && "
-          "$1.getType().cast<ShapedType>().hasStaticShape() && "
-          "$0.getType().cast<ShapedType>().getShape() =="
-          "$1.getType().cast<ShapedType>().getShape()">,
-    "have the same static shape">;
 
 def IsPermutationNCHW : Constraint<CPred<"IsPermutationNCHW($0)">>;
 
@@ -445,19 +433,11 @@ foreach L2NormalizePairs = [[TFL_MulOp, TFL_RsqrtOp], [TFL_DivOp, TFL_SqrtOp]]
 def AreBroadcastableTypes : Constraint<CPred<
   "TFL::IsBroadcastableElementsAttrAndType($0.getType(), $1.getType())">>;
 
-def OperandsBroadcastToOutputType : Constraint<CPred<
-  "TFL::OperandsBroadcastToOutputType($0.getType(), $1.getType(), "
-                                     "$2.getType())">>;
-
 def IsTailOfShape : Constraint<CPred<
   "TFL::IsTailOfShape($0.getType(), $1.getType())">>;
 
 def IsReducedTailOfShape : Constraint<CPred<
   "TFL::IsReducedTailOfShape($0.getType(), $1.getType())">>;
-
-def IsRankLessThanEqualTo : Constraint<CPred<
-  "$0.getType().cast<ShapedType>().getRank() <= "
-  "$1.getType().cast<ShapedType>().getRank()">>;
 
 def Flatten : NativeCodeCall<
   "$0.cast<DenseElementsAttr>()"
@@ -511,6 +491,12 @@ multiclass FusedBinaryActivationFuncOpPat<Op BinaryOp> {
   }
 }
 
+// Returns true if the supplied values both have one use each
+// or are reused by the same user.
+def HasOneUseOrReusedBySameOp : Constraint<CPred<
+  "((std::distance($0.getUses().begin(), $0.getUses().end()) == 2) && ($0 == $1))"
+    "|| ($0.hasOneUse() && $1.hasOneUse())">>;
+
 foreach BinaryOp = [TFL_AddOp, TFL_SubOp, TFL_DivOp, TFL_MulOp] in {
   defm : FuseTileBroadcastIntoFollowingBinary<BinaryOp>;
 
@@ -556,10 +542,11 @@ foreach BinaryOp = [TFL_AddOp, TFL_SubOp, TFL_DivOp, TFL_MulOp] in {
               $act_fn),
     (TFL_ReshapeOp (BinaryOp $input1, $input2, $act_fn), $shape1),
     [(IsTailOfShape $rhs, $lhs),
-      (IsTailOfShape $lhs, $rhs),
-      (IsTailOfShape $input1, $input2),
-      (IsTailOfShape $input2, $input1),
-      (SameElementType $input1, $input2)]>;
+     (IsTailOfShape $lhs, $rhs),
+     (IsTailOfShape $input1, $input2),
+     (IsTailOfShape $input2, $input1),
+     (SameElementType $input1, $input2),
+     (HasOneUseOrReusedBySameOp $lhs, $rhs)]>;
 
   // Move binary op batched RHS before reshape:
   // binary(reshape(lhs), rhs) => reshape(binary(lhs, flatten(rhs)))
@@ -1111,23 +1098,6 @@ foreach SelectOp = [TFL_SelectOp, TFL_SelectV2Op] in {
   def Optimize#SelectOp#Not : Pat<
     (SelectOp (TFL_LogicalNotOp $condition), $input1, $input2),
     (SelectOp $condition, $input2, $input1)>;
-
-  // Fuse select(broadcast_to(input, shape), x, y) -> selectV2(input, x, y)
-  // Also, fuse selectv2(broadcast_to(input, shape), x, y) -> selectV2(input, x, y)
-  // It is safe to perform this transform here because-
-  // the shapes of `pre_broadcast` and `dim` must be broadcast
-  // compatible for the `broadcast_to` op to be valid.
-  // And considering, `shape(post_broadcast)` == `shape(%input1)`,
-  // `post_broadcast` is broadcast compatible with `input1`.
-  def FuseBroadcastInto#SelectOp : Pat<
-    (SelectOp
-      (TFL_BroadcastToOp:$post_broadcast AnyStaticShapeTensor:$pre_broadcast, $dim),
-      AnyStaticShapeTensor:$input1, AnyStaticShapeTensor:$input2),
-    (TFL_SelectV2Op $pre_broadcast, $input1, $input2),
-    [(HasSameStaticShapes $post_broadcast, $input1),
-     (HasRankAtMost<4> $post_broadcast),
-     (HasRankAtMost<4> $input1),
-     (HasRankAtMost<4> $input2)]>;
 }
 
 def EliminateLogicalAndTrue : Pat<
@@ -1594,7 +1564,9 @@ def FuseReshapesAroundBatchMatMulLHS: Pat<
       $rhs, $adj_x, $adj_y, $bool_attr),
     (Arith_ConstantOp $s1)),
   (TFL_BatchMatMulOp $input, $rhs, $adj_x, $adj_y, $bool_attr),
-  [(HasRank<2> $rhs),
+  [(HasRankAtLeast<2> $input),
+   (HasRankAtLeast<2> $final_shape_change),
+   (HasRank<2> $rhs),
    (HasRank<2> $initial_shape_change),
    (AnyStaticShapeTensor $input),
    (AnyStaticShapeTensor $initial_shape_change),
@@ -1612,6 +1584,7 @@ def FuseReshapesAroundBatchMatMulLHS: Pat<
 // 1. The rank of rhs is 2
 // 2. The original input reshape has a) reduction in leading broadcast dim and
 //    b) flattening of the contracting dims.
+// 3. non-broadcasting, non-contracting dims of the rhs are not flattened.
 def FuseOutputReshape_BatchMatMulWithFlattenedContractingDims: Pat<
   (TFL_ReshapeOp:$final_shape_change
     (TFL_BatchMatMulOp:$bmm_tmp_output
@@ -1631,6 +1604,7 @@ def FuseOutputReshape_BatchMatMulWithFlattenedContractingDims: Pat<
    (AnyStaticShapeTensor $final_shape_change),
    (IsBroadcastDimEqualToOne $input),
    (IsBroadcastDimEqualToOne $final_shape_change),
+   (TrailingDimValuesEqual $bmm_tmp_output, $final_shape_change),
    (ContractingDimsProductEqual<2> $input, $initial_shape_change),
    (NonBroadcastingNonContractingLhsDimsProductEqual<0,1> $input, $initial_shape_change),
    (NonBroadcastingNonContractingLhsDimsProductEqual<0,1> $final_shape_change, $bmm_tmp_output)]>;

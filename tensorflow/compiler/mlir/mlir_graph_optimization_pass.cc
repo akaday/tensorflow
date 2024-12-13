@@ -38,8 +38,8 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_device.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_dialect.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_executor.h"
-#include "tensorflow/compiler/mlir/tensorflow/translate/import_model.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/attribute_utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/device_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/dump_mlir_util.h"
 #include "tensorflow/compiler/mlir/tf2xla/api/v2/graph_to_tf_executor.h"
@@ -155,7 +155,7 @@ static void RegisterDialects(mlir::DialectRegistry& registry) {
   // clang-format on
 }
 
-Status MlirFunctionOptimizationPass::Run(
+absl::Status MlirFunctionOptimizationPass::Run(
     const std::string& function_name, const DeviceSet& device_set,
     const ConfigProto& config_proto,
     const FunctionOptimizationPass::FunctionOptions& function_options,
@@ -277,7 +277,7 @@ Status MlirFunctionOptimizationPass::Run(
           *module_ref, llvm::StringRef(), nullptr);
     }
 
-    Status pass_status = absl::OkStatus();
+    absl::Status pass_status = absl::OkStatus();
     auto pass_state = per_pass_state[per_pass_state_index++];
     if (pass_state == MlirOptimizationPassState::Enabled) {
       VLOG(2) << "Run MLIR graph optimization pass: " << StringRefToView(name);
@@ -361,7 +361,7 @@ Status MlirFunctionOptimizationPass::Run(
   timings.Reset({kTfMlirCategory, "convert_mlir_to_graph"});
   // Some or all passes are enabled. Convert MLIR module and return back
   // resulted graph.
-  Status status = tensorflow::tf2xla::v2::ConvertTfExecutorToGraph(
+  absl::Status status = tensorflow::tf2xla::v2::ConvertTfExecutorToGraph(
       *module_ref, export_config, graph, flib_def, &control_ret_nodes);
   if (!status.ok()) {
     errors::AppendToMessage(&status,
@@ -387,8 +387,21 @@ MlirV1CompatOptimizationPassRegistry::Global() {
   return *global;
 }
 
-Status MlirV1CompatGraphOptimizationPass::Run(
+absl::Status MlirV1CompatGraphOptimizationPass::Run(
     const GraphOptimizationPassOptions& options) {
+  // Skip MLIR V1 optimization pass if it is not enabled in compiling
+  // SavedModel.
+  if (!options.enable_tf2xla_mlir_bridge) {
+    LOG(INFO)
+        << "MLIR V1 optimization pass is not enabled in compiling SavedModel.";
+    metrics::UpdateTfMlirBridgeFirstPhaseCounter(
+        /*bridge_type*/ mlir::TF::kMlirPh1BridgeCounterReplicated,
+        /*bridge_version*/ mlir::TF::kMlirPh1BridgeCounterV1,
+        /*device_type*/ mlir::TF::kMlirPh1BridgeCounterTpu,
+        /*fallback_enabled*/ true,
+        /*result*/ "disabled_by_user");
+    return absl::OkStatus();
+  }
   // Skip function graphs as MlirOptimizationPassRegistry_ will be used instead.
   // Skip if no underlying pass was registered.
   if (options.is_function_graph || !registry_->pass()) return absl::OkStatus();
@@ -415,7 +428,7 @@ Status MlirV1CompatGraphOptimizationPass::Run(
   // session runtime.
   import_config.restrict_functionalization_to_compiled_nodes = true;
 
-  auto module_ref_status = ConvertGraphToMlir(
+  auto module_ref_status = tensorflow::tf2xla::v2::ConvertGraphToTfExecutor(
       **options.graph, debug_info, *options.flib_def, import_config, &context);
   if (!module_ref_status.ok()) {
     if (pass_state == MlirOptimizationPassState::Enabled) {
@@ -439,7 +452,7 @@ Status MlirV1CompatGraphOptimizationPass::Run(
   if (VLOG_IS_ON(1)) {
     DumpModule(*module_ref, llvm::formatv("mlir_{0}_before_", name));
   }
-  Status pass_status = pass->Run(options, *module_ref);
+  absl::Status pass_status = pass->Run(options, *module_ref);
 
   bool is_module_updated = !mlir::OperationEquivalence::isEquivalentTo(
       module_ref_clone, *module_ref,

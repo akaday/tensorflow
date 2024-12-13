@@ -30,8 +30,8 @@ limitations under the License.
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "xla/debug_options_flags.h"
+#include "xla/hlo/analysis/hlo_dfs_reachability.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
-#include "xla/hlo/ir/hlo_dfs_reachability.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
@@ -189,13 +189,13 @@ FusionDecision ProducerCandidateIsFusible(
     const HloDfsReachability& reachability, FusionInfoCache* fusion_info_cache,
     const se::DeviceDescription& device_info,
     GpuHloCostAnalysis* cost_analysis) {
-  if (!IsFusibleAsMultiOutputFusionRoot(consumer)) {
+  if (!IsFusibleAsMultiOutputFusionRoot(consumer, device_info)) {
     return FusionDecision::Forbid(
         "consumer not eligible as multi-output fusion root.");
   }
 
   RETURN_IF_NOT_FUSIBLE(
-      ShapesCompatibleForMultiOutputFusion(consumer, producer));
+      ShapesCompatibleForMultiOutputFusion(consumer, producer, device_info));
 
   RETURN_IF_NOT_FUSIBLE(
       OperandReachableFromProducer(producer, consumer, reachability));
@@ -208,11 +208,9 @@ FusionDecision ProducerCandidateIsFusible(
     return FusionDecision::Forbid("will generate too large IR");
   }
 
-  GpuPerformanceModel::RunTimes t = GpuPerformanceModel::EstimateRunTimes(
-      &producer, device_info, cost_analysis,
-      GpuPerformanceModelOptions::Default(),
-      /*fused_consumers=*/{&consumer},
-      /*multi_output=*/true);
+  GpuPerformanceModel::RunTimes t =
+      GpuPerformanceModel::EstimateRunTimesForMultiOutputFusion(
+          &producer, &consumer, device_info, cost_analysis);
   if (t.time_fused > t.time_unfused) {
     return FusionDecision::Forbid("will execute slower if fused");
   }
@@ -233,7 +231,7 @@ std::vector<HloInstruction*> GetProducerConsumerMultiOutputFusionCandidates(
 
   // If the producer is not a valid candidate for MOF, no need to check any of
   // its users.
-  if (!IsProducerMultiOutputFusible(*producer)) {
+  if (!IsProducerMultiOutputFusible(*producer, device_info)) {
     return fusion_candidates;
   }
 
@@ -265,9 +263,11 @@ std::vector<HloInstruction*> GetProducerConsumerMultiOutputFusionCandidates(
   return fusion_candidates;
 }
 
-bool IsSiblingFusionCandidate(const HloInstruction* instr) {
-  if (instr->users().empty() || !IsFusibleAsMultiOutputFusionRoot(*instr) ||
-      IsNestableVariadicReduction(*instr)) {
+bool IsSiblingFusionCandidate(const HloInstruction* instr,
+                              const se::DeviceDescription& device_info) {
+  if (instr->users().empty() ||
+      !IsFusibleAsMultiOutputFusionRoot(*instr, device_info) ||
+      IsNestableVariadicReduction(*instr, device_info)) {
     return false;
   }
   // Check if the users of multioutput fusion is not a get-tuple-element.
@@ -292,7 +292,7 @@ FusionDecision CanFuseSiblings(const HloInstruction& sibling_consumer_1,
   }
 
   RETURN_IF_NOT_FUSIBLE(ShapesCompatibleForMultiOutputFusion(
-      sibling_consumer_1, sibling_consumer_2));
+      sibling_consumer_1, sibling_consumer_2, device_info));
 
   // Technically, this check is order-dependent (e.g. siblings A, B, C where
   // {A, B} and {B, C} overlap, but {A, C} do not. If the priority order is
@@ -331,7 +331,9 @@ bool MultiOutputFusion::FuseSiblings(HloInstruction* parent,
   std::vector<HloInstruction*> siblings;
   // Only consider siblings that are fusion candidates.
   absl::c_copy_if(parent->users(), std::back_inserter(siblings),
-                  IsSiblingFusionCandidate);
+                  [&](const HloInstruction* instr) {
+                    return IsSiblingFusionCandidate(instr, device_info_);
+                  });
   // Sort the siblings such that multi-output fusion ops occur first, followed
   // by fusion ops, followed by unfused ops.
   absl::c_stable_sort(siblings,
@@ -418,7 +420,7 @@ absl::StatusOr<bool> MultiOutputFusion::DoMultiOutputFusion() {
   std::vector<HloInstruction*> defs_before_uses =
       computation_->MakeInstructionPostOrder();
 
-  FusionInfoCache fusion_info_cache;
+  FusionInfoCache fusion_info_cache(device_info_);
   // Traverse the HLO in uses-before-defs order.
   for (auto it = defs_before_uses.rbegin(); it != defs_before_uses.rend();
        ++it) {
@@ -467,7 +469,7 @@ absl::StatusOr<bool> MultiOutputFusion::DoMultiOutputFusion() {
     } else {
       input_fusion = computation_->AddInstruction(HloInstruction::CreateFusion(
           consumer_for_fusion->shape(),
-          ChooseFusionKind(*producer, *consumer_for_fusion),
+          ChooseFusionKind(*producer, *consumer_for_fusion, device_info_),
           consumer_for_fusion));
       VLOG(2) << "Fuse producer " << producer->name() << " and its consumer "
               << consumer_for_fusion->name() << " into "

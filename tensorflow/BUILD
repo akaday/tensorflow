@@ -75,7 +75,6 @@ PACKAGE_STATIC_DEPS = [
     "@icu//:__subpackages__",
     "@libjpeg_turbo//:__subpackages__",
     "@llvm-project//:__subpackages__",
-    "@nsync//:__subpackages__",
     "@png//:__subpackages__",
     "@sobol_data//:__subpackages__",
     "@stablehlo//:__subpackages__",
@@ -552,18 +551,30 @@ config_setting(
 
 config_setting(
     name = "linux_aarch64",
+    constraint_values = if_google(
+        ["//third_party/bazel_platforms/os:linux"],
+        [],
+    ),
     values = {"cpu": "aarch64"},
     visibility = ["//visibility:public"],
 )
 
 config_setting(
     name = "linux_armhf",
+    constraint_values = if_google(
+        ["//third_party/bazel_platforms/os:linux"],
+        [],
+    ),
     values = {"cpu": "armhf"},
     visibility = ["//visibility:public"],
 )
 
 config_setting(
     name = "linux_x86_64",
+    constraint_values = if_google(
+        ["//third_party/bazel_platforms/os:linux"],
+        [],
+    ),
     values = {"cpu": "k8"},
     visibility = ["//visibility:public"],
 )
@@ -577,6 +588,10 @@ config_setting(
 # This condition takes precedence over :linux_x86_64
 config_setting(
     name = "linux_x86_64_no_sse",
+    constraint_values = if_google(
+        ["//third_party/bazel_platforms/os:linux"],
+        [],
+    ),
     values = {
         "cpu": "k8",
         "copt": "-mno-sse4.2",
@@ -588,6 +603,10 @@ config_setting(
 # TODO(b/290533709): Remove this with PJRT build rule cleanup.
 config_setting(
     name = "linux_x86_64_with_weightwatcher",
+    constraint_values = if_google(
+        ["//third_party/bazel_platforms/os:linux"],
+        [],
+    ),
     define_values = {"tensorflow_weightwatcher": "true"},
     values = {"cpu": "k8"},
     visibility = ["//visibility:public"],
@@ -595,24 +614,40 @@ config_setting(
 
 config_setting(
     name = "linux_ppc64le",
+    constraint_values = if_google(
+        ["//third_party/bazel_platforms/os:linux"],
+        [],
+    ),
     values = {"cpu": "ppc"},
     visibility = ["//visibility:public"],
 )
 
 config_setting(
     name = "linux_s390x",
+    constraint_values = if_google(
+        ["//third_party/bazel_platforms/os:linux"],
+        [],
+    ),
     values = {"cpu": "s390x"},
     visibility = ["//visibility:public"],
 )
 
 config_setting(
     name = "linux_mips64",
+    constraint_values = if_google(
+        ["//third_party/bazel_platforms/os:linux"],
+        [],
+    ),
     values = {"cpu": "mips64"},
     visibility = ["//visibility:public"],
 )
 
 config_setting(
     name = "linux_riscv64",
+    constraint_values = if_google(
+        ["//third_party/bazel_platforms/os:linux"],
+        [],
+    ),
     values = {"cpu": "riscv64"},
     visibility = ["//visibility:public"],
 )
@@ -853,6 +888,14 @@ config_setting(
 config_setting(
     name = "api_version_2",
     define_values = {"tf_api_version": "2"},
+    visibility = ["//visibility:public"],
+)
+
+# This flag specifies the file prefixes to strip from the file imports
+# when generating python apis.
+config_setting(
+    name = "litert_prefixes",
+    define_values = {"litert_prefixes": "external/org_tensorflow/"},
     visibility = ["//visibility:public"],
 )
 
@@ -1209,6 +1252,7 @@ cc_import(
         "//tensorflow:macos": ":libtensorflow_framework.dylib",
         "//conditions:default": ":libtensorflow_framework.so.%s" % VERSION_MAJOR,
     }),
+    visibility = ["//visibility:public"],
 )
 
 # -------------------------------------------
@@ -1453,7 +1497,7 @@ tf_cc_shared_library(
 
 # To avoid duplication, check that the C++ or python library does not depend on
 # the stream executor cuda plugins. Targets that want to use cuda APIs should
-# instead depend on the dummy plugins in @local_tsl//tsl/platform/default/build_config
+# instead depend on the dummy plugins in //tensorflow/compiler/xla/tsl/platform/default/build_config
 # and use header only targets.
 # TODO(ddunleavy): This seems completely broken. :tensorflow_cc depends on
 # cuda_platform from tf_additional_binary_deps and this doesn't break.
@@ -1463,7 +1507,6 @@ check_deps(
         [],
         otherwise = [
             "@local_xla//xla/stream_executor/cuda:all_runtime",
-            "@local_xla//xla/stream_executor/cuda:cuda_driver",
             "@local_xla//xla/stream_executor/cuda:cuda_platform",
             "@local_xla//xla/stream_executor/cuda:cudnn_plugin",
             "@local_xla//xla/stream_executor/cuda:cufft_plugin",
@@ -1641,6 +1684,10 @@ generate_apis(
         "compat_template_v1.__init__.py",
         "compat_template.__init__.py",
     ],
+    file_prefixes_to_strip = select({
+        ":litert_prefixes": ["external/org_tensorflow/"],
+        "//conditions:default": [],
+    }),
     output_dir = "_api/v1/",
     output_files = TENSORFLOW_API_INIT_FILES_V1,
     output_package = "tensorflow._api.v1",
@@ -1661,6 +1708,10 @@ generate_apis(
         "compat_template_v1.__init__.py",
         "compat_template.__init__.py",
     ],
+    file_prefixes_to_strip = select({
+        ":litert_prefixes": ["external/org_tensorflow/"],
+        "//conditions:default": [],
+    }),
     output_dir = "_api/v2/",
     output_files = TENSORFLOW_API_INIT_FILES_V2,
     output_package = "tensorflow._api.v2",

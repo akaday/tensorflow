@@ -41,7 +41,6 @@ limitations under the License.
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/graph.h"
-#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/statusor.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/device_name_utils.h"
@@ -184,9 +183,10 @@ class ConstantCache {
 };
 
 // Returns a node computing the size of the Slice op with inputs `slice_inputs`.
-Status ComputeSliceSize(const Scope& host_scope,
-                        const SliceInputs& slice_inputs,
-                        std::vector<const Edge*> control_deps, Output* size) {
+absl::Status ComputeSliceSize(const Scope& host_scope,
+                              const SliceInputs& slice_inputs,
+                              std::vector<const Edge*> control_deps,
+                              Output* size) {
   // If slice_size[i] >= 0 then slice_size[i] = slice_size[i].
   //
   // If slice_size[i] == -1 then slice_size[i] = input_size[i] -
@@ -248,14 +248,14 @@ Status ComputeSliceSize(const Scope& host_scope,
 // Terminology: "static sized" slice is a slice with the
 // _XlaCompileTimeConstantInputs attribute set to {2}.  The output shape of
 // these slices can be solely determined by their "size" input.
-Status ConvertTensorFlowSliceToStaticShapedSlice(
+absl::Status ConvertTensorFlowSliceToStaticShapedSlice(
     Graph* g, Node* slice, const SliceInputs& slice_inputs,
     absl::string_view cluster_name, Node** result) {
   string host_name;
   TF_RETURN_IF_ERROR(DeviceNameUtils::DeviceNameToCpuDeviceName(
       slice->assigned_device_name(), &host_name));
 
-  Status status;
+  absl::Status status;
   Scope main_scope =
       NewInternalScope(g, &status, /*refiner=*/nullptr)
           .WithXlaCluster(string(cluster_name))
@@ -316,8 +316,9 @@ void ReplaceTensorFlowSliceWithStaticShapedSlice(Graph* g, Node* slice,
   g->RemoveNode(slice);
 }
 
-Status RewriteSlice(Graph* g, Node* slice, const SliceInputs& slice_inputs,
-                    absl::string_view cluster_name) {
+absl::Status RewriteSlice(Graph* g, Node* slice,
+                          const SliceInputs& slice_inputs,
+                          absl::string_view cluster_name) {
   VLOG(3) << "Rewriting slice " << slice->name()
           << " to a \"static shaped\" Slice";
   Node* static_shaped_slice;
@@ -358,7 +359,7 @@ absl::StatusOr<bool> ShouldRewriteSlice(Node* n) {
   return !slice_inputs->begin.node()->IsConstant();
 }
 
-Status FindAndRewriteSlices(Graph* g, bool* changed) {
+absl::Status FindAndRewriteSlices(Graph* g, bool* changed) {
   std::vector<Node*> slices_to_rewrite;
   for (Node* n : g->nodes()) {
     TF_ASSIGN_OR_RETURN(bool is_rewritable, ShouldRewriteSlice(n));
@@ -386,7 +387,7 @@ Status FindAndRewriteSlices(Graph* g, bool* changed) {
 }
 }  // namespace
 
-Status IncreaseDynamismForAutoJitPass::Run(
+absl::Status IncreaseDynamismForAutoJitPass::Run(
     const GraphOptimizationPassOptions& options) {
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
   if (flags->tf_xla_clustering_debug) {

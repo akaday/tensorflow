@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "xla/service/gpu/model/gpu_indexing_performance_model.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <variant>
@@ -27,9 +28,9 @@ limitations under the License.
 #include "mlir/IR/MLIRContext.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/utils/hlo_traversal.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/gpu_device_info_for_tests.h"
-#include "xla/service/gpu/hlo_traversal.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/model/fusion_analysis_cache.h"
@@ -37,6 +38,7 @@ limitations under the License.
 #include "xla/service/gpu/model/gpu_performance_model_base.h"
 #include "xla/service/gpu/model/symbolic_tile_analysis.h"
 #include "xla/service/gpu/model/tiled_hlo_computation.h"
+#include "xla/service/hlo_cost_analysis.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/stream_executor/device_description.h"
@@ -56,21 +58,16 @@ using ::tsl::testing::StatusIs;
 
 class GpuIndexingPerformanceModelTest : public HloTestBase {
  public:
-  GpuHloCostAnalysis::ShapeSizeFunction ShapeSizeBytesFunction() const {
-    return [&](const Shape& shape) {
-      constexpr int64_t kPointerSize = 8;
-      return ShapeUtil::ByteSizeOf(shape, kPointerSize);
-    };
-  }
-
   mlir::MLIRContext mlir_context_;
   // The reference times in the test cases below are measured
   // on A6000 by profiling the execution of the HLOs.
   se::DeviceDescription device_info_{TestGpuDeviceInfo::RTXA6000DeviceInfo()};
   HloFusionAnalysisCache fusion_analysis_cache_{device_info_};
   GpuPerformanceModelWithIndexingAnalysis indexing_cost_model_{
-      &device_info_, &fusion_analysis_cache_, ShapeSizeBytesFunction(),
+      &device_info_, &fusion_analysis_cache_, HloCostAnalysis::DefaultShapeSize,
       &mlir_context_};
+
+  size_t WarpSize() const { return ::xla::gpu::WarpSize(device_info_); }
 
   GpuIndexingPerformanceModelTest() : HloTestBase() {}
 };
@@ -336,7 +333,7 @@ ENTRY main {
 
   EXPECT_THAT(tiled_runtime_data.block_level_parameters.output_tile_sizes,
               ElementsAre(4, 911));
-  EXPECT_EQ(tiled_runtime_data.block_level_parameters.num_warps, 16);
+  EXPECT_EQ(tiled_runtime_data.block_level_parameters.num_warps, 4);
 
   EXPECT_EQ(tiled_runtime_data.runtime_data.bytes_read, kExpectedBytesRead);
   EXPECT_EQ(tiled_runtime_data.runtime_data.bytes_written, kOutputSizeBytes);
@@ -650,13 +647,13 @@ ENTRY main {
           .ComputeTiledHloInstructions(/*tile_parameters=*/{9, 9, 9}));
 
   LaunchDimensions launch_dimensions = GpuPerformanceModelWithIndexingAnalysis::
-      GetLaunchDimensionsForTiledFusion(tiled_hlo_computation);
+      GetLaunchDimensionsForTiledFusion(tiled_hlo_computation, device_info_);
   EXPECT_EQ(launch_dimensions.num_blocks(), 1);
 
   // Tile size is 9 * 9 * 9 = 729 that corresponds to 2 warps. But we estimate
   // the number of warps for padded tile that has size of 16 * 16 * 16 = 4096
-  // and corresponds to 16 warps.
-  EXPECT_EQ(launch_dimensions.num_threads_per_block(), 16 * WarpSize());
+  // and corresponds to 4 warps.
+  EXPECT_EQ(launch_dimensions.num_threads_per_block(), 4 * WarpSize());
 }
 
 TEST_F(GpuIndexingPerformanceModelTest,
@@ -698,12 +695,12 @@ ENTRY main {
           .ComputeTiledHloInstructions(/*tile_parameters=*/{1}));
 
   LaunchDimensions launch_dimensions = GpuPerformanceModelWithIndexingAnalysis::
-      GetLaunchDimensionsForTiledFusion(tiled_hlo_computation);
+      GetLaunchDimensionsForTiledFusion(tiled_hlo_computation, device_info_);
   EXPECT_EQ(launch_dimensions.num_blocks(), 1);
 
   // The largest tile size is 1 * 4096, for which our implementation recommends
-  // using 16 warps.
-  EXPECT_EQ(launch_dimensions.num_threads_per_block(), 16 * WarpSize());
+  // using 4 warps.
+  EXPECT_EQ(launch_dimensions.num_threads_per_block(), 4 * WarpSize());
 }
 
 class FlopsPerElementTest : public GpuIndexingPerformanceModelTest {
@@ -713,10 +710,7 @@ class FlopsPerElementTest : public GpuIndexingPerformanceModelTest {
                             ParseAndReturnVerifiedModule(hlo_module_string));
 
     GpuHloCostAnalysis cost_analysis(
-        GpuHloCostAnalysis::Options{ShapeSizeBytesFunction(),
-                                    /*per_second_rates=*/{},
-                                    /*min_latencies_seconds=*/{},
-                                    /*count_multiple_input_accesses=*/true},
+        GpuHloCostAnalysis::Options{.count_multiple_input_accesses = true},
         device_info_);
 
     ASSERT_IS_OK(module->entry_computation()->Accept(&cost_analysis));

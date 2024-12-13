@@ -59,6 +59,7 @@ limitations under the License.
 #include "xla/pjrt/pjrt_layout.h"
 #include "xla/pjrt/status_casters.h"
 #include "xla/python/callback.h"
+#include "xla/python/guard_lib.h"
 #include "xla/python/ifrt/client.h"
 #include "xla/python/ifrt/compiler.h"
 #include "xla/python/ifrt/device.h"
@@ -83,17 +84,12 @@ limitations under the License.
 #include "xla/python/py_values.h"
 #include "xla/python/python_ref_manager.h"
 #include "xla/python/traceback.h"
-#include "xla/python/transfer_guard_lib.h"
 #include "xla/python/types.h"
 #include "xla/service/custom_call_target_registry.h"
 #include "xla/service/platform_util.h"  // IWYU pragma: keep
-#include "xla/service/spmd/shardy/constants.h"
-#include "xla/service/spmd/shardy/sdy_round_trip/pipelines.h"
-#include "xla/service/spmd/shardy/utils.h"
 #include "xla/shape.h"
 #include "xla/status_macros.h"
 #include "xla/tsl/concurrency/ref_count.h"
-#include "xla/tsl/framework/mlir/status_scoped_diagnostic_handler.h"
 #include "xla/util.h"
 #include "tsl/platform/casts.h"
 #include "tsl/platform/errors.h"
@@ -344,10 +340,9 @@ absl::Status PyClient::Defragment() {
   options.allow_zero_copy =
       (!force_copy && (host_buffer_semantics ==
                        ifrt::Client::HostBufferSemantics::kImmutableZeroCopy));
-  // TODO(phawkins): remove .ptr() after nanobind transition is complete.
-  TF_ASSIGN_OR_RETURN(
-      auto put_fn, DevicePut(argument.ptr(), client->ifrt_client_.get(), device,
-                             options, ifrt::MemoryKind()));
+  TF_ASSIGN_OR_RETURN(auto put_fn,
+                      DevicePut(argument, client->ifrt_client_.get(), device,
+                                options, ifrt::MemoryKind()));
   TF_ASSIGN_OR_RETURN(auto put, [&]() {
     // Must release the GIL before calling IFRT because backends may
     // decide to block/sleep for device buffer allocation.
@@ -434,6 +429,11 @@ PyClient::CompileIfrtProgram(
             *stats->bytes_limit);
       }
     }
+
+    if (pjrt_compatible_client->pjrt_client()->key_value_store().has_value()) {
+      options.executable_build_options.set_key_value_store(
+          *pjrt_compatible_client->pjrt_client()->key_value_store());
+    }
   }
 
   std::unique_ptr<ifrt::LoadedExecutable> ifrt_loaded_executable;
@@ -459,15 +459,9 @@ PyClient::CompileIfrtProgram(
   TF_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> module,
                       ParseMlirModuleString(mlir_module, context));
   if (options.executable_build_options.use_shardy_partitioner()) {
-    mlir::PassManager pm(&context);
-    // Since Shardy is inside the middle of the XLA pipeline, after converting
-    // down to HLO, we need to run the Shardy export pipeline to preserve the
-    // SDY ops and sharding attributes for when we come back from HLO to MLIR
-    // when Shardy propagation is run.
-    xla::sdy::addSdyRoundTripExportPipeline(pm);
-    TF_RETURN_IF_ERROR(
-        tsl::StatusScopedDiagnosticHandler(&context).consumeStatus(
-            pm.run(*module)));
+    // Since Shardy is located in the middle of the XLA pipeline, we need to
+    // export it before going to HLO while preserving Shardy ops and attrs.
+    TF_RETURN_IF_ERROR(ExportShardyForHloRoundTrip(*module));
   }
   return CompileIfrtProgram(
       client, std::make_unique<xla::ifrt::HloProgram>(module.get()),
@@ -639,14 +633,13 @@ absl::StatusOr<nb::object> PyClient::MakePythonCallbackUsingHostSendAndRecv(
 }
 
 absl::StatusOr<std::pair<uint64_t, nb::object>>
-PyClient::GetEmitPythonCallbackDescriptor(nb::callable callable,
-                                          nb::object operand_shapes,
-                                          nb::object result_shapes) {
-  TF_ASSIGN_OR_RETURN(auto loaded_host_callback,
-                      PyCpuLoadedHostCallback::Create(
-                          ifrt_client(), std::move(callable),
-                          nb::cast<std::vector<Shape>>(operand_shapes),
-                          nb::cast<std::vector<Shape>>(result_shapes)));
+PyClient::GetEmitPythonCallbackDescriptor(
+    nb::callable callable, absl::Span<Shape const> operand_shapes,
+    absl::Span<Shape const> result_shapes) {
+  TF_ASSIGN_OR_RETURN(
+      auto loaded_host_callback,
+      PyCpuLoadedHostCallback::Create(ifrt_client(), std::move(callable),
+                                      operand_shapes, result_shapes));
   const uint64_t descriptor = loaded_host_callback->descriptor();
 
   nb::capsule callback_capsule(
@@ -697,6 +690,7 @@ PyType_Slot PyClient::slots_[] = {
   nb::class_<PyClient> py_local_client(m, "Client", nb::is_weak_referenceable(),
                                        nb::type_slots(PyClient::slots_));
   py_local_client.def_prop_ro("platform", &PyClient::platform_name)
+      .def_prop_ro("_raw_platform", &PyClient::raw_platform_name)
       .def_prop_ro("platform_version", &PyClient::platform_version)
       .def_prop_ro("runtime_type", &PyClient::runtime_type)
       .def("device_count", &PyClient::device_count)

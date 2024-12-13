@@ -16,31 +16,44 @@ limitations under the License.
 #include "xla/service/elemental_ir_emitter.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 // IWYU pragma: no_include "llvm/IR/Intrinsics.gen.inc"
 #include "absl/algorithm/container.h"
+#include "absl/base/macros.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constant.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Value.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "xla/comparison_util.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -52,7 +65,9 @@ limitations under the License.
 #include "xla/service/llvm_ir/ir_array.h"
 #include "xla/service/llvm_ir/llvm_loop.h"
 #include "xla/service/llvm_ir/llvm_util.h"
+#include "xla/service/llvm_ir/loop_emitter.h"
 #include "xla/service/llvm_ir/math_ops.h"
+#include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
 #include "xla/types.h"
@@ -60,26 +75,20 @@ limitations under the License.
 #include "xla/window_util.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/logging.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 
 using absl::StrCat;
-using llvm::PatternMatch::m_BitCast;
-using llvm::PatternMatch::m_Intrinsic;
-using llvm::PatternMatch::m_Select;
-using llvm::PatternMatch::m_Value;
-using llvm::PatternMatch::match;
 using llvm_ir::IrArray;
 using llvm_ir::IrName;
 using llvm_ir::SetToFirstInsertPoint;
 using xla::float8_fnuz_ir_emitter::EmitF8fnuzToFloating;
 using xla::float8_fnuz_ir_emitter::EmitFloatingToF8fnuz;
 
-namespace {
-
 absl::StatusOr<llvm::Value*> EmitReducePrecisionIR(
     PrimitiveType src_ty, llvm::Value* x, int64_t dest_exponent_bits,
-    int64_t dest_mantissa_bits, bool quiet_nans, llvm::IRBuilder<>* b) {
+    int64_t dest_mantissa_bits, bool quiet_nans, llvm::IRBuilderBase* b) {
   using llvm::APInt;
 
   if (!primitive_util::IsFloatingPointType(src_ty)) {
@@ -220,10 +229,12 @@ absl::StatusOr<llvm::Value*> EmitReducePrecisionIR(
   return result;
 }
 
+namespace {
+
 template <int f8_exponent_bits>
 llvm::Value* handle_halfway_points_F16ToF8(llvm::Value* f16_abs_bits,
                                            llvm::Value* f8_bits,
-                                           llvm::IRBuilder<>* b) {
+                                           llvm::IRBuilderBase* b) {
   using llvm::APInt;
   using llvm::Value;
   static_assert(3 <= f8_exponent_bits && f8_exponent_bits <= 4);
@@ -305,7 +316,7 @@ llvm::Value* handle_halfway_points_F16ToF8(llvm::Value* f16_abs_bits,
 }
 
 absl::StatusOr<llvm::Value*> EmitF16ToF8e5m2(llvm::Value* f16_value,
-                                             llvm::IRBuilder<>* b) {
+                                             llvm::IRBuilderBase* b) {
   TF_ASSIGN_OR_RETURN(
       llvm::Value * reduced_precision,
       EmitReducePrecisionIR(
@@ -319,7 +330,7 @@ absl::StatusOr<llvm::Value*> EmitF16ToF8e5m2(llvm::Value* f16_value,
   return b->CreateBitCast(truncated, b->getInt8Ty());
 }
 
-llvm::Value* EmitF8e5m2ToF16(llvm::Value* f8_value, llvm::IRBuilder<>* b) {
+llvm::Value* EmitF8e5m2ToF16(llvm::Value* f8_value, llvm::IRBuilderBase* b) {
   llvm::Value* as_int8 = b->CreateBitCast(f8_value, b->getInt8Ty());
   llvm::Value* as_int16 = b->CreateZExt(as_int8, b->getInt16Ty());
   llvm::Value* shifted = b->CreateShl(as_int16, 8);
@@ -328,7 +339,7 @@ llvm::Value* EmitF8e5m2ToF16(llvm::Value* f8_value, llvm::IRBuilder<>* b) {
 
 template <int f8_exponent_bits>
 absl::StatusOr<llvm::Value*> EmitF16ToF8e(llvm::Value* f16_value,
-                                          llvm::IRBuilder<>* b) {
+                                          llvm::IRBuilderBase* b) {
   static_assert(3 <= f8_exponent_bits && f8_exponent_bits <= 4);
   constexpr int f8_mantissa_bits = 7 - f8_exponent_bits;
   using llvm::APInt;
@@ -414,7 +425,7 @@ absl::StatusOr<llvm::Value*> EmitF16ToF8e(llvm::Value* f16_value,
 }
 
 template <int f8_exponent_bits>
-llvm::Value* EmitToF16F8e(llvm::Value* f8_value, llvm::IRBuilder<>* b) {
+llvm::Value* EmitToF16F8e(llvm::Value* f8_value, llvm::IRBuilderBase* b) {
   using llvm::APInt;
   using llvm::Value;
   static_assert(3 <= f8_exponent_bits && f8_exponent_bits <= 4);
@@ -543,7 +554,7 @@ llvm::Value* EmitToF16F8e(llvm::Value* f8_value, llvm::IRBuilder<>* b) {
   return b->CreateBitCast(f16_as_int, b->getHalfTy());
 }
 
-llvm::Value* EmitF16ToF8e4m3fn(llvm::Value* f16_value, llvm::IRBuilder<>* b) {
+llvm::Value* EmitF16ToF8e4m3fn(llvm::Value* f16_value, llvm::IRBuilderBase* b) {
   using llvm::APInt;
   using llvm::Value;
 
@@ -578,7 +589,7 @@ llvm::Value* EmitF16ToF8e4m3fn(llvm::Value* f16_value, llvm::IRBuilder<>* b) {
       /*dest_exponent_bits=*/5,
       /*dest_mantissa_bits=*/3,
       /*quiet_nans=*/false, b);
-  CHECK(f16_reduced_statusor.ok());  // Crash OK
+  CHECK_OK(f16_reduced_statusor.status());  // Crash OK
   Value* f16_reduced = f16_reduced_statusor.value();
   f16_reduced = b->CreateBitCast(f16_reduced, i16_type);
 
@@ -634,7 +645,7 @@ llvm::Value* EmitF16ToF8e4m3fn(llvm::Value* f16_value, llvm::IRBuilder<>* b) {
   return f8_bits;
 }
 
-llvm::Value* EmitF8e4m3fnToF16(llvm::Value* f8_value, llvm::IRBuilder<>* b) {
+llvm::Value* EmitF8e4m3fnToF16(llvm::Value* f8_value, llvm::IRBuilderBase* b) {
   using llvm::APInt;
   using llvm::Value;
 
@@ -729,7 +740,7 @@ llvm::Value* EmitF8e4m3fnToF16(llvm::Value* f8_value, llvm::IRBuilder<>* b) {
 }
 
 llvm::Value* EmitF16ToF8e4m3b11fnuz(llvm::Value* f16_value,
-                                    llvm::IRBuilder<>* b) {
+                                    llvm::IRBuilderBase* b) {
   using llvm::APInt;
   using llvm::Value;
 
@@ -758,7 +769,7 @@ llvm::Value* EmitF16ToF8e4m3b11fnuz(llvm::Value* f16_value,
 }
 
 llvm::Value* EmitF8e4m3b11fnuzToF16(llvm::Value* f8_value,
-                                    llvm::IRBuilder<>* b) {
+                                    llvm::IRBuilderBase* b) {
   using llvm::APInt;
   using llvm::Value;
 
@@ -801,15 +812,15 @@ llvm::Value* EmitF8e4m3b11fnuzToF16(llvm::Value* f8_value,
 llvm::Value* EmitIntegralToFloating(llvm::Value* integer_value,
                                     PrimitiveType from_type,
                                     PrimitiveType to_type, llvm::Module* module,
-                                    llvm::IRBuilder<>* b) {
+                                    llvm::IRBuilderBase* b) {
   if (primitive_util::IsSignedIntegralType(from_type)) {
-    return b->CreateSIToFP(integer_value,
-                           llvm_ir::PrimitiveTypeToIrType(to_type, module));
+    return b->CreateSIToFP(integer_value, llvm_ir::PrimitiveTypeToIrType(
+                                              to_type, module->getContext()));
   } else {
     CHECK(primitive_util::IsUnsignedIntegralType(from_type) ||
           from_type == PRED);
-    return b->CreateUIToFP(integer_value,
-                           llvm_ir::PrimitiveTypeToIrType(to_type, module));
+    return b->CreateUIToFP(integer_value, llvm_ir::PrimitiveTypeToIrType(
+                                              to_type, module->getContext()));
   }
 }
 
@@ -859,12 +870,13 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
         return b_->CreateZExt(
             ICmpNE(operand_value,
                    llvm::ConstantInt::get(operand_value->getType(), 0)),
-            llvm_ir::PrimitiveTypeToIrType(PRED, module_));
+            llvm_ir::PrimitiveTypeToIrType(PRED, module_->getContext()));
       }
       if (primitive_util::IsIntegralType(to_type)) {
-        return IntCast(operand_value,
-                       llvm_ir::PrimitiveTypeToIrType(to_type, module_),
-                       primitive_util::IsSignedIntegralType(from_type));
+        return IntCast(
+            operand_value,
+            llvm_ir::PrimitiveTypeToIrType(to_type, module_->getContext()),
+            primitive_util::IsSignedIntegralType(from_type));
       }
       if (primitive_util::IsFloatingPointType(to_type)) {
         if (to_type == F8E5M2) {
@@ -909,7 +921,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
       }
       if (primitive_util::IsComplexType(to_type)) {
         auto to_ir_component_type = llvm_ir::PrimitiveTypeToIrType(
-            primitive_util::ComplexComponentType(to_type), module_);
+            primitive_util::ComplexComponentType(to_type),
+            module_->getContext());
         if (primitive_util::IsSignedIntegralType(from_type)) {
           return EmitComposeComplex(
               op, SIToFP(operand_value, to_ir_component_type), nullptr);
@@ -933,8 +946,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
       }
       if (primitive_util::BitWidth(from_type) ==
           primitive_util::BitWidth(to_type)) {
-        return BitCast(operand_value,
-                       llvm_ir::PrimitiveTypeToIrType(to_type, module_));
+        return BitCast(operand_value, llvm_ir::PrimitiveTypeToIrType(
+                                          to_type, module_->getContext()));
       }
       return InvalidArgument(
           "bitcast conversion from primitive type %s to %s with unequal "
@@ -947,8 +960,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
       bool is_signed =
           primitive_util::IsSignedIntegralType(op->shape().element_type());
       if (is_signed) {
-        auto type =
-            llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(), module_);
+        auto type = llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(),
+                                                   module_->getContext());
         auto cmp = ICmpSGE(operand_value, GetZero(type));
         return Select(cmp, operand_value, Neg(operand_value));
       } else {
@@ -964,8 +977,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
     case HloOpcode::kSign: {
       CHECK(primitive_util::IsSignedIntegralType(op->shape().element_type()))
           << op->shape().element_type();
-      auto type =
-          llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(), module_);
+      auto type = llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(),
+                                                 module_->getContext());
       auto cmp = ICmpEQ(operand_value, GetZero(type));
       auto ashr = AShr(operand_value, type->getIntegerBitWidth() - 1);
       return Select(cmp, GetZero(type), Or(ashr, 1));
@@ -978,8 +991,9 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitIntegerUnaryOp(
         // It is not sufficient to just call CreateNot() here because a PRED
         // is represented as an i8 and the truth value is stored only in the
         // bottom bit.
-        return b_->CreateZExt(Not(Trunc(operand_value, b_->getInt1Ty())),
-                              llvm_ir::PrimitiveTypeToIrType(PRED, module_));
+        return b_->CreateZExt(
+            Not(Trunc(operand_value, b_->getInt1Ty())),
+            llvm_ir::PrimitiveTypeToIrType(PRED, module_->getContext()));
       } else if (primitive_util::IsIntegralType(type)) {
         return Not(operand_value);
       }
@@ -1123,7 +1137,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         return EmitComposeComplex(
             op,
             FPCast(operand_value,
-                   llvm_ir::PrimitiveTypeToIrType(to_component_type, module_)),
+                   llvm_ir::PrimitiveTypeToIrType(to_component_type,
+                                                  module_->getContext())),
             nullptr);
       }
       if (to_type == BF16) {
@@ -1137,7 +1152,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         // Cast to F16 first. Casts to F8E5M2 must be from F16.
         if (from_type != F16) {
           operand_value = b_->CreateFPCast(
-              operand_value, llvm_ir::PrimitiveTypeToIrType(F16, module_));
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext()));
         }
         return EmitF16ToF8e5m2(operand_value, b_);
       }
@@ -1145,7 +1161,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         // Cast to F16 first. Casts to F8E4M3 must be from F16.
         if (from_type != F16) {
           operand_value = b_->CreateFPCast(
-              operand_value, llvm_ir::PrimitiveTypeToIrType(F16, module_));
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext()));
         }
         return EmitF16ToF8e<4>(operand_value, b_);
       }
@@ -1153,7 +1170,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         // Cast to F16 first. Casts to F8E4M3FN must be from F16.
         if (from_type != F16) {
           operand_value = b_->CreateFPCast(
-              operand_value, llvm_ir::PrimitiveTypeToIrType(F16, module_));
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext()));
         }
         return EmitF16ToF8e4m3fn(operand_value, b_);
       }
@@ -1161,7 +1179,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         // Cast to F16 first. Casts to F8E4M3B11FNUZ must be from F16.
         if (from_type != F16) {
           operand_value = b_->CreateFPCast(
-              operand_value, llvm_ir::PrimitiveTypeToIrType(F16, module_));
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext()));
         }
         return EmitF16ToF8e4m3b11fnuz(operand_value, b_);
       }
@@ -1172,7 +1191,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         // Cast to F16 first. Casts to F8E3M4 must be from F16.
         if (from_type != F16) {
           operand_value = b_->CreateFPCast(
-              operand_value, llvm_ir::PrimitiveTypeToIrType(F16, module_));
+              operand_value,
+              llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext()));
         }
         return EmitF16ToF8e<3>(operand_value, b_);
       }
@@ -1180,13 +1200,15 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         return b_->CreateZExt(
             FCmpUNE(operand_value,
                     llvm::ConstantFP::get(operand_value->getType(), 0.0)),
-            llvm_ir::PrimitiveTypeToIrType(PRED, module_));
+            llvm_ir::PrimitiveTypeToIrType(PRED, module_->getContext()));
       }
-      auto* to_ir_type = llvm_ir::PrimitiveTypeToIrType(to_type, module_);
+      auto* to_ir_type =
+          llvm_ir::PrimitiveTypeToIrType(to_type, module_->getContext());
       if (primitive_util::IsFloatingPointType(to_type)) {
         return FPCast(operand_value, to_ir_type);
       }
-      auto* from_ir_type = llvm_ir::PrimitiveTypeToIrType(from_type, module_);
+      auto* from_ir_type =
+          llvm_ir::PrimitiveTypeToIrType(from_type, module_->getContext());
       int to_width = primitive_util::BitWidth(to_type);
       if (primitive_util::IsSignedIntegralType(to_type)) {
         int64_t min_int = llvm::minIntN(to_width);
@@ -1196,8 +1218,9 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         auto max_value_int = llvm::ConstantInt::get(to_ir_type, max_int);
         auto min_value_float = llvm::ConstantFP::get(from_ir_type, min_int);
         auto max_value_float = llvm::ConstantFP::get(from_ir_type, max_int);
-        auto clamped = FPToSI(operand_value,
-                              llvm_ir::PrimitiveTypeToIrType(to_type, module_));
+        auto clamped = FPToSI(
+            operand_value,
+            llvm_ir::PrimitiveTypeToIrType(to_type, module_->getContext()));
         // x <= static_cast<float>(INT_MIN) ? INT_MIN : ...
         clamped = Select(FCmpOLE(operand_value, min_value_float), min_value_int,
                          clamped);
@@ -1216,8 +1239,9 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
         auto max_value_int = llvm::ConstantInt::get(to_ir_type, max_int);
         auto min_value_float = llvm::ConstantFP::get(from_ir_type, min_int);
         auto max_value_float = llvm::ConstantFP::get(from_ir_type, max_int);
-        auto clamped = FPToUI(operand_value,
-                              llvm_ir::PrimitiveTypeToIrType(to_type, module_));
+        auto clamped = FPToUI(
+            operand_value,
+            llvm_ir::PrimitiveTypeToIrType(to_type, module_->getContext()));
         // (x <= 0.0 || isnan(x)) ? 0 : ...
         clamped = Select(FCmpULE(operand_value, min_value_float), min_value_int,
                          clamped);
@@ -1239,8 +1263,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
       }
       if (primitive_util::BitWidth(from_type) ==
           primitive_util::BitWidth(to_type)) {
-        return BitCast(operand_value,
-                       llvm_ir::PrimitiveTypeToIrType(to_type, module_));
+        return BitCast(operand_value, llvm_ir::PrimitiveTypeToIrType(
+                                          to_type, module_->getContext()));
       }
       return InvalidArgument(
           "bitcast conversion from primitive type %s to %s with unequal "
@@ -1316,8 +1340,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitFloatUnaryOp(
           llvm::Intrinsic::fabs, {operand_value}, {type}, b_);
       auto infinity = llvm::ConstantFP::getInfinity(type);
       auto not_infinite = FCmpONE(abs_value, infinity);
-      return b_->CreateZExt(not_infinite,
-                            llvm_ir::PrimitiveTypeToIrType(PRED, module_));
+      return b_->CreateZExt(not_infinite, llvm_ir::PrimitiveTypeToIrType(
+                                              PRED, module_->getContext()));
     }
     case HloOpcode::kNegate:
       return FNeg(operand_value);
@@ -1413,8 +1437,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitComplexUnaryOp(
       }
       PrimitiveType to_component_type =
           primitive_util::ComplexComponentType(to_type);
-      auto to_ir_component_type =
-          llvm_ir::PrimitiveTypeToIrType(to_component_type, module_);
+      auto to_ir_component_type = llvm_ir::PrimitiveTypeToIrType(
+          to_component_type, module_->getContext());
       return EmitComposeComplex(
           op, FPCast(EmitExtractReal(operand_value), to_ir_component_type),
           FPCast(EmitExtractImag(operand_value), to_ir_component_type));
@@ -2259,7 +2283,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitComplexBinaryOp(
       TF_ASSIGN_OR_RETURN(
           auto sqrt_x_squared_plus_y_squared,
           EmitComplexSqrt(op, component_type, x_squared_plus_y_squared));
-      auto type = llvm_ir::PrimitiveTypeToIrType(component_type, module_);
+      auto type =
+          llvm_ir::PrimitiveTypeToIrType(component_type, module_->getContext());
       auto zero = llvm::ConstantFP::get(type, 0.0);
       auto one = llvm::ConstantFP::get(type, 1.0);
       auto i = EmitComposeComplex(op, zero, one);
@@ -2300,7 +2325,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitLog(
 absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitLog1p(
     PrimitiveType prim_type, llvm::Value* value) {
   auto x = value;
-  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_);
+  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_->getContext());
   auto one = llvm::ConstantFP::get(type, 1.0);
   auto negative_half = llvm::ConstantFP::get(type, -0.5);
   // When x is large, the naive evaluation of ln(x + 1) is more
@@ -2374,7 +2399,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitCos(
 absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitCosm1(
     PrimitiveType prim_type, llvm::Value* value) {
   auto x = value;
-  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_);
+  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_->getContext());
   auto negative_half = llvm::ConstantFP::get(type, -0.5);
   auto negative_one = llvm::ConstantFP::get(type, -1.0);
 
@@ -2419,7 +2444,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitExp(
 absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitExpm1(
     PrimitiveType prim_type, llvm::Value* value) {
   auto x = value;
-  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_);
+  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_->getContext());
   auto one = llvm::ConstantFP::get(type, 1.0);
   auto half = llvm::ConstantFP::get(type, 0.5);
   auto zero = llvm::ConstantFP::get(type, 0.0);
@@ -2451,7 +2476,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitPow(
 
 absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitCbrt(
     PrimitiveType prim_type, llvm::Value* value) {
-  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_);
+  auto type = llvm_ir::PrimitiveTypeToIrType(prim_type, module_->getContext());
   auto third = llvm::ConstantFP::get(type, 1.0 / 3.0);
   auto abs_value =
       llvm_ir::EmitCallToIntrinsic(llvm::Intrinsic::fabs, {value}, {type}, b_);
@@ -2496,7 +2521,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitReducePrecision(
       /*quiet_nans=*/false, b_);
 }
 
-static llvm::Value* SaturateShiftIfNecessary(llvm::IRBuilder<>* b,
+static llvm::Value* SaturateShiftIfNecessary(llvm::IRBuilderBase* b,
                                              llvm::Value* lhs, llvm::Value* rhs,
                                              llvm::Value* shift_result,
                                              bool saturate_to_sign_bit) {
@@ -2833,9 +2858,10 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalConcatenate(
   }
 
   llvm_ir::SetToFirstInsertPoint(exit_block, b_);
-  llvm::PHINode* output = b_->CreatePHI(
-      llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(), module_),
-      hlo->operands().size());
+  llvm::PHINode* output =
+      b_->CreatePHI(llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(),
+                                                   module_->getContext()),
+                    hlo->operands().size());
   auto prior_insert_point = b_->GetInsertPoint();
 
   b_->SetInsertPoint(init_block);
@@ -3196,7 +3222,8 @@ ElementalIrEmitter::EmitElementalDynamicUpdateSlice(
   // if (slice_intersection) -> return data from 'update'.
   // else                    -> return data from 'input'.
   llvm::AllocaInst* ret_value_addr = llvm_ir::EmitAllocaAtFunctionEntry(
-      llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(), module_),
+      llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(),
+                                     module_->getContext()),
       "ret_value_addr", b_);
   llvm_ir::LlvmIfData if_data =
       llvm_ir::EmitIfThenElse(slice_intersection, "slice_intersection", b_);
@@ -3260,7 +3287,8 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalPad(
   //   ret_value = *operand1;        // padding
   // }
   llvm::AllocaInst* ret_value_addr = llvm_ir::EmitAllocaAtFunctionEntry(
-      llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(), module_),
+      llvm_ir::PrimitiveTypeToIrType(hlo->shape().element_type(),
+                                     module_->getContext()),
       "pad_result_addr", b_);
   llvm_ir::LlvmIfData if_data =
       llvm_ir::EmitIfThenElse(in_bounds, "in_bounds", b_);
@@ -3324,9 +3352,10 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalDot(
   SetToFirstInsertPoint(inner_loop->GetPreheaderBasicBlock(), b_);
   PrimitiveType primitive_type = hlo->shape().element_type();
   llvm::Type* primitive_type_llvm =
-      llvm_ir::PrimitiveTypeToIrType(primitive_type, module_);
+      llvm_ir::PrimitiveTypeToIrType(primitive_type, module_->getContext());
   if (primitive_type == BF16) {
-    primitive_type_llvm = llvm_ir::PrimitiveTypeToIrType(F32, module_);
+    primitive_type_llvm =
+        llvm_ir::PrimitiveTypeToIrType(F32, module_->getContext());
   }
   llvm::AllocaInst* accumulator_alloca =
       llvm_ir::EmitAllocaAtFunctionEntry(primitive_type_llvm, "dot_acc", b_);
@@ -3551,7 +3580,8 @@ llvm_ir::ElementGenerator ElementalIrEmitter::MakeElementGenerator(
         if (primitive_util::IsIntegralType(component_element_type)) {
           iota_result = b_->CreateIntCast(
               elem_index_linear,
-              llvm_ir::PrimitiveTypeToIrType(component_element_type, module_),
+              llvm_ir::PrimitiveTypeToIrType(component_element_type,
+                                             module_->getContext()),
               /*isSigned=*/false);
         } else {
           TF_RET_CHECK(
@@ -3559,12 +3589,14 @@ llvm_ir::ElementGenerator ElementalIrEmitter::MakeElementGenerator(
               << component_element_type;
           llvm::Type* float_ir_type;
           if (component_element_type == F8E4M3FNUZ) {
-            float_ir_type = llvm_ir::PrimitiveTypeToIrType(F16, module_);
-          } else if (component_element_type == F8E5M2FNUZ) {
-            float_ir_type = llvm_ir::PrimitiveTypeToIrType(F16, module_);
-          } else {
             float_ir_type =
-                llvm_ir::PrimitiveTypeToIrType(component_element_type, module_);
+                llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext());
+          } else if (component_element_type == F8E5M2FNUZ) {
+            float_ir_type =
+                llvm_ir::PrimitiveTypeToIrType(F16, module_->getContext());
+          } else {
+            float_ir_type = llvm_ir::PrimitiveTypeToIrType(
+                component_element_type, module_->getContext());
           }
           llvm::Value* float_val =
               b_->CreateUIToFP(elem_index_linear, float_ir_type);
@@ -3720,8 +3752,8 @@ llvm::Value* ElementalIrEmitter::EmitExtractImag(llvm::Value* value) {
 llvm::Value* ElementalIrEmitter::EmitComposeComplex(const HloInstruction* op,
                                                     llvm::Value* real,
                                                     llvm::Value* imag) {
-  auto cplx_type =
-      llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(), module_);
+  auto cplx_type = llvm_ir::PrimitiveTypeToIrType(op->shape().element_type(),
+                                                  module_->getContext());
   auto complex =
       InsertValue(llvm::ConstantAggregateZero::get(cplx_type), real, {0});
   if (imag != nullptr) {
@@ -3786,11 +3818,12 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalReduceWindow(
     auto operand = reduce_window->inputs()[operand_index];
     PrimitiveType operand_element_type = operand->shape().element_type();
     operand_element_types.push_back(operand_element_type);
-    llvm::Type* llvm_type =
-        llvm_ir::PrimitiveTypeToIrType(operand_element_type, module_);
+    llvm::Type* llvm_type = llvm_ir::PrimitiveTypeToIrType(
+        operand_element_type, module_->getContext());
     accum_types.push_back(llvm_type);
     llvm::Value* accum_ptr = llvm_ir::EmitAllocaAtFunctionEntry(
-        llvm_ir::PrimitiveTypeToIrType(operand_element_type, module_),
+        llvm_ir::PrimitiveTypeToIrType(operand_element_type,
+                                       module_->getContext()),
         "reduce_window_accum_ptr", b_);
     accum_ptrs.push_back(accum_ptr);
     {
@@ -3912,7 +3945,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitElementalReduce(
         is_variadic ? out_shape.tuple_shapes(i) : out_shape;
     PrimitiveType accumulator_type = element_shape.element_type();
     llvm::Type* accumulator_llvm_type =
-        llvm_ir::PrimitiveTypeToIrType(accumulator_type, module_);
+        llvm_ir::PrimitiveTypeToIrType(accumulator_type, module_->getContext());
     accumulator_types.push_back(accumulator_llvm_type);
 
     // Initialize an accumulator with init_value.
@@ -4026,7 +4059,7 @@ absl::StatusOr<llvm::Value*> ElementalIrEmitter::EmitConvolution(
   // at the given index.
   PrimitiveType lhs_element_type = lhs->shape().element_type();
   llvm::Type* lhs_llvm_type =
-      llvm_ir::PrimitiveTypeToIrType(lhs_element_type, module_);
+      llvm_ir::PrimitiveTypeToIrType(lhs_element_type, module_->getContext());
   // Upcast the accumulator to F32 from F16 for increased precision.
   llvm::Type* accumulator_type =
       lhs_element_type == F16 ? b_->getFloatTy() : lhs_llvm_type;

@@ -24,7 +24,7 @@ VERSION=$1
 REQUIREMENTS=$2
 
 # Install Python packages for this container's version
-if [[ ${VERSION} == "python3.13" ]]; then
+if [[ ${VERSION} == "python3.13" || ${VERSION} == "python3.12" ]]; then
   cat >pythons.txt <<EOF
 $VERSION
 $VERSION-dev
@@ -50,12 +50,6 @@ for f in $(ls | grep python); do
   ln -s /usr/include/x86_64-linux-gnu/$f /dt9/usr/include/x86_64-linux-gnu/$f
 done
 popd
-
-# Setup links for TensorFlow to compile.
-# Referenced in devel.usertools/*.bazelrc
-ln -sf /usr/bin/$VERSION /usr/bin/python3
-ln -sf /usr/bin/$VERSION /usr/bin/python
-ln -sf /usr/lib/$VERSION /usr/lib/tf_python
 
 # Python 3.10 include headers fix:
 # sysconfig.get_path('include') incorrectly points to /usr/local/include/python

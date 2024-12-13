@@ -15,10 +15,10 @@ limitations under the License.
 #include "tensorflow/core/data/service/client/utils.h"
 
 #include <cstdint>
-#include <optional>
 #include <string>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/substitute.h"
 #include "absl/time/time.h"
 #include "xla/tsl/protobuf/error_codes.pb.h"
@@ -47,7 +47,7 @@ absl::StatusOr<DataServiceMetadata> GetDataServiceMetadata(
   absl::Time deadline =
       absl::FromUnixMicros(EnvTime::NowMicros()) + kGetMetadataRetryTimeout;
 
-  Status status = grpc_util::Retry(
+  absl::Status status = grpc_util::Retry(
       [&]() { return client.GetDataServiceMetadata(dataset_id, metadata); },
       absl::Substitute("Get data service metadata for dataset $0, "
                        "with dispatcher at $1.",
