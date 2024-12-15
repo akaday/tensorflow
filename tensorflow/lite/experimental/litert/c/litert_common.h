@@ -15,9 +15,6 @@
 #ifndef TENSORFLOW_LITE_EXPERIMENTAL_LITERT_C_LITERT_COMMON_H_
 #define TENSORFLOW_LITE_EXPERIMENTAL_LITERT_C_LITERT_COMMON_H_
 
-#include <stdbool.h>  // NOLINT: To use bool type in C
-#include <stdint.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif  // __cplusplus
@@ -93,25 +90,11 @@ typedef enum {
   kLiteRtStatusErrorInvalidLegalization = 2001,
 } LiteRtStatus;
 
-typedef enum {
-  kLiteRtAnyTypeNone = 0,
-  kLiteRtAnyTypeBool = 1,
-  kLiteRtAnyTypeInt = 2,
-  kLiteRtAnyTypeReal = 3,
-  kLiteRtAnyTypeString = 8,
-  kLiteRtAnyTypeVoidPtr = 9,
-} LiteRtAnyType;
-
-typedef struct {
-  LiteRtAnyType type;
-  union {
-    bool bool_value;
-    int64_t int_value;
-    double real_value;
-    const char* str_value;
-    const void* ptr_value;
-  };
-} LiteRtAny;
+typedef enum : int {
+  kLiteRtHwAccelatorCpu = 1 << 0,
+  kLiteRtHwAccelatorGpu = 1 << 1,
+  kLiteRtHwAccelatorNpu = 1 << 2,
+} LiteRtHwAccelerators;
 
 #ifdef __cplusplus
 }

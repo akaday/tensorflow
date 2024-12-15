@@ -127,12 +127,14 @@ cc_library(
     hdrs = ["op_utils.h"],
     copts = tf_profiler_copts(),
     deps = [
+        ":hlo_module_map",
         ":op_metrics_db_utils",
         "//tensorflow/core:lib",
         "//tensorflow/core/platform:protobuf",
         "//tensorflow/core/profiler/convert:op_metrics_db_combiner",
         "//tensorflow/core/profiler/protobuf:op_metrics_proto_cc",
         "@com_google_absl//absl/strings",
+        "@local_xla//xla/hlo/ir:hlo",
         "@local_xla//xla/tsl/profiler/utils:tf_op_utils",
         "@local_xla//xla/tsl/profiler/utils:timespan",
     ],
@@ -452,6 +454,7 @@ tf_cuda_library(
     ],
     visibility = [":friends"],
     deps = [
+        ":hlo_module_utils",
         ":hlo_proto_map",
         ":hlo_proto_to_module",
         "//tensorflow/core/platform:path",
@@ -486,6 +489,20 @@ cc_library(
         "@local_xla//xla/service:hlo_cost_analysis",
         "@local_xla//xla/service/gpu/model:gpu_hlo_cost_analysis",
     ],
+)
+
+cc_library(
+    name = "tpu_step_breakdown_utils",
+    hdrs = ["tpu_step_breakdown_utils.h"],
+    visibility = [":friends"],
+    deps = ["//tensorflow/core/profiler/protobuf:steps_db_proto_cc"],
+)
+
+cc_library(
+    name = "tpu_step_details_utils",
+    hdrs = ["tpu_step_details_utils.h"],
+    visibility = [":friends"],
+    deps = ["//tensorflow/core/profiler/protobuf:tpu_input_pipeline_proto_cc"],
 )
 
 tf_cc_test(

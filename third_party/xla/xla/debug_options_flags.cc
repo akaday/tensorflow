@@ -124,6 +124,8 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_graph_enable_concurrent_region(false);
   opts.set_xla_cmd_buffer_trace_cache_size(16);
 
+  opts.set_xla_gpu_collectives_use_persistent_cliques(false);
+
   // Despite the name, fast min/max on GPUs does not seem to be any faster, and
   // adds very counter-intuitive "NaN-swallowing" behavior.
   opts.set_xla_gpu_enable_fast_min_max(false);
@@ -166,7 +168,6 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_shape_checks(DebugOptions::RUNTIME);
   opts.set_xla_dump_latency_hiding_schedule(false);
   opts.set_xla_gpu_enable_latency_hiding_scheduler(false);
-  opts.set_xla_gpu_lhs_enable_gpu_async_tracker(true);
   opts.set_xla_gpu_enable_analytical_latency_estimator(false);
   opts.set_xla_gpu_pgle_profile_file_or_directory_path("");
   opts.set_xla_gpu_memory_limit_slop_factor(95);
@@ -1353,6 +1354,12 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
                 debug_options->xla_gpu_enable_cublaslt(),
                 "Use cuBLASLt for GEMMs when possible."));
   flag_list->push_back(tsl::Flag(
+      "xla_gpu_collectives_use_persistent_cliques",
+      bool_setter_for(
+          &DebugOptions::set_xla_gpu_collectives_use_persistent_cliques),
+      debug_options->xla_gpu_collectives_use_persistent_cliques(),
+      "Use persistent per-process XLA:GPU collectives cliques"));
+  flag_list->push_back(tsl::Flag(
       "xla_gpu_graph_level", setter_for_xla_gpu_graph_level, 1,
       "The legacy flag for setting GPU graph level. Use "
       "xla_gpu_enable_command_buffer in new use cases. 0 = off; 1 = capture "
@@ -1566,11 +1573,6 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
           &DebugOptions::set_xla_gpu_pgle_profile_file_or_directory_path),
       debug_options->xla_gpu_pgle_profile_file_or_directory_path(),
       "Directory or file for PGLE profiles in XLA:GPU"));
-  flag_list->push_back(tsl::Flag(
-      "xla_gpu_lhs_enable_gpu_async_tracker",
-      bool_setter_for(&DebugOptions::set_xla_gpu_lhs_enable_gpu_async_tracker),
-      debug_options->xla_gpu_lhs_enable_gpu_async_tracker(),
-      "Enable GPU async tracker for latency-hiding scheduler in XLA:GPU"));
   flag_list->push_back(tsl::Flag(
       "xla_gpu_memory_limit_slop_factor",
       int32_setter_for(&DebugOptions::set_xla_gpu_memory_limit_slop_factor),

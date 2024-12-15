@@ -159,6 +159,14 @@ Expected<BufferRef<uint8_t>> GetTflBuffer(const TflModel& tfl_model,
   return *buffer;
 }
 
+Expected<const TflBuffer*> GetBuffer(const TflModel& tfl_model,
+                                     uint32_t buffer_ind) {
+  if (buffer_ind >= tfl_model.buffers.size()) {
+    return Error(kLiteRtStatusErrorIndexOOB);
+  }
+  return tfl_model.buffers.at(buffer_ind).get();
+}
+
 Expected<TflBufferPtr> TakeBuffer(TflModel& tfl_model, uint32_t buffer_ind) {
   if (buffer_ind >= tfl_model.buffers.size()) {
     return Error(kLiteRtStatusErrorIndexOOB);
@@ -252,9 +260,10 @@ Expected<TflPerChannelQParams> AsPerChannelQparams(
   if (!IsPerChannelQuantized(tfl_quantization)) {
     return Error(kLiteRtStatusErrorInvalidArgument);
   }
-  return std::make_tuple(tfl_quantization->quantized_dimension,
-                         tfl_quantization->zero_point.size(),
-                         tfl_quantization->zero_point, tfl_quantization->scale);
+  return TflPerChannelQParams(tfl_quantization->quantized_dimension,
+                              tfl_quantization->zero_point.size(),
+                              tfl_quantization->zero_point,
+                              tfl_quantization->scale);
 }
 
 ::tflite::Allocation::Ptr MakeAllocation(BufferRef<uint8_t> buf) {

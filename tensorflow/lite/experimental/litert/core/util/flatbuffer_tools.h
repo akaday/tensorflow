@@ -68,7 +68,7 @@ using TflPerTensorQParams = std::pair<int64_t, float>;
 
 // Quantized dim, num channels, zero-points, scales.
 using TflPerChannelQParams =
-    std::tuple<int32_t, uint64_t, std::vector<int64_t>, std::vector<float>>;
+    std::tuple<int32_t, size_t, std::vector<int64_t>, std::vector<float>>;
 
 // Mirror of all the tensor type related fields in flatbuffer tensor definition.
 struct TflShapeInfo {
@@ -160,6 +160,10 @@ Expected<BufferRef<uint8_t>> GetTflBuffer(const TflModel& tfl_model,
 // Get the buffer object at the given index if it exists that can be written to.
 Expected<MutableBufferRef<uint8_t>> GetMutableTflBuffer(TflModel& tfl_model,
                                                         uint32_t buffer_ind);
+
+// Get a non-owning view of tfl buffer if it exists.
+Expected<const TflBuffer*> GetBuffer(const TflModel& tfl_model,
+                                     uint32_t buffer_ind);
 
 // Move and take ownership of the buffer object at given index if it exists.
 Expected<TflBufferPtr> TakeBuffer(TflModel& tfl_model, uint32_t buffer_ind);

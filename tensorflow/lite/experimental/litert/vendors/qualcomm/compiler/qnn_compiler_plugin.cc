@@ -110,6 +110,16 @@ const char* LiteRtGetCompilerPluginSocManufacturer() {
   return kPluginManufacturer;
 }
 
+LiteRtStatus LiteRtGetCompilerPluginSupportedHardware(
+    LiteRtCompilerPlugin compiler_plugin,
+    LiteRtHwAccelerators* supported_hardware) {
+  if (!compiler_plugin || !supported_hardware) {
+    return kLiteRtStatusErrorInvalidArgument;
+  }
+  *supported_hardware = kLiteRtHwAccelatorNpu;
+  return kLiteRtStatusOk;
+}
+
 LiteRtStatus LiteRtGetNumCompilerPluginSupportedSocModels(
     LiteRtCompilerPlugin compiler_plugin,
     LiteRtParamIndex* num_supported_soc_models) {
@@ -208,16 +218,11 @@ bool IsOpSupported(const litert::Op& op) {
 
 }  // namespace
 
-LiteRtStatus LiteRtCompilerPluginPartitionModel(
-    LiteRtCompilerPlugin compiler_plugin, LiteRtModel model,
-    LiteRtOpList selected_ops) {
-  auto m = litert::Model::CreateFromNonOwnedHandle(model);
-  auto subgraph = m.MainSubgraph();
-  if (!subgraph) {
-    return subgraph.Error().Status();
-  }
-
-  for (const auto& op : subgraph->Ops()) {
+LiteRtStatus LiteRtCompilerPluginPartition(LiteRtCompilerPlugin compiler_plugin,
+                                           LiteRtSubgraph subgraph,
+                                           LiteRtOpList selected_ops) {
+  ::litert::Subgraph graph(subgraph);
+  for (const auto& op : graph.Ops()) {
     if (!IsOpSupported(op)) {
       continue;
     }

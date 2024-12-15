@@ -130,8 +130,13 @@ cc_test(
     data = [
         "//tensorflow/lite/experimental/litert/test:testdata/simple_model.tflite",
     ],
+    linkopts = select({
+        "//tensorflow:android": ["-landroid"],
+        "//conditions:default": [],
+    }),
     deps = [
         ":compiled_model",
+        ":tensor_buffer",
         "//tensorflow/lite:framework",
         "//tensorflow/lite/c:c_api_opaque",
         "//tensorflow/lite/c:common",
@@ -142,6 +147,8 @@ cc_test(
         "//tensorflow/lite/experimental/litert/cc:litert_expected",
         "//tensorflow/lite/experimental/litert/cc:litert_tensor_buffer",
         "//tensorflow/lite/experimental/litert/core/model",
+        "//tensorflow/lite/experimental/litert/test:common",
+        "//tensorflow/lite/experimental/litert/test:simple_model",
         "//tensorflow/lite/kernels:builtin_ops",
         "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/strings:string_view",

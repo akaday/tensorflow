@@ -35,6 +35,7 @@
 #include "tensorflow/lite/experimental/litert/c/litert_op_code.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_buffer_ref.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
+#include "tensorflow/lite/experimental/litert/core/byte_code_util.h"
 #include "tensorflow/lite/experimental/litert/core/model/ir_allocator.h"
 #include "tensorflow/lite/experimental/litert/core/util/flatbuffer_tools.h"
 #include "tensorflow/lite/schema/schema_generated.h"
@@ -708,12 +709,26 @@ class LiteRtModelT {
   MetadataMap::iterator MetadataBegin() { return metadata_.begin(); }
   MetadataMap::iterator MetadataEnd() { return metadata_.end(); }
 
+  // Remvoe and take ownership of the metadata under given key if it exists.
+  litert::Expected<litert::OwningBufferRef<uint8_t>> PopMetadata(
+      absl::string_view key) {
+    if (auto it = metadata_.find(key); it != metadata_.end()) {
+      return metadata_.extract(it).mapped();
+    }
+    return ::litert::Error(kLiteRtStatusErrorNotFound);
+  }
+
   // BUILDERS
 
   // Build a new subgraph and get a stable reference to it.
   template <class... Args>
   LiteRtSubgraphT& EmplaceSubgraph(Args&&... args) {
     return subgraphs_.EmplaceBack(std::forward<Args>(args)...);
+  }
+
+  // Transfers given subgraphs into this model.
+  void TransferSubgraphs(LiteRtSubgraphT::Alloc&& subgraphs) {
+    subgraphs_.Transfer(std::move(subgraphs));
   }
 
   // Cut all by the first `size` subgraphs. Does nothing if given size is
@@ -732,6 +747,7 @@ class LiteRtModelT {
     return kLiteRtStatusOk;
   }
 
+  // Construct a new signature for this model.
   template <class... Args>
   LiteRtSignatureT& EmplaceSignature(Args&&... args) {
     return signatures_.EmplaceBack(std::forward<Args>(args)...);
