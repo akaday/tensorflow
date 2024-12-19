@@ -1223,8 +1223,10 @@ cc_library(
     srcs = ["gpu_float_support.cc"],
     hdrs = ["gpu_float_support.h"],
     deps = [
+        "//xla:shape_util",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
+        "//xla/service:collective_ops_utils",
         "//xla/service:float_support",
         "//xla/service/gpu/fusions/triton:triton_support",
         "//xla/stream_executor:device_description",
@@ -2120,6 +2122,7 @@ cc_library(
         "//xla/service:p2p_schedule_preparation",
         "//xla/service:profile_guided_latency_estimator",
         "//xla/service/gpu/model:analytical_latency_estimator",
+        "//xla/service/gpu/model:sol_latency_estimator",
         "//xla/service/gpu/transforms:pgle_accuracy_checker",
         "//xla/service/gpu/transforms:schedule_postprocessing",
         "//xla/service/gpu/transforms:scheduling_instruction_annotator",

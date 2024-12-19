@@ -235,6 +235,7 @@ cc_library(
         "//xla:cpu_function_runtime",
         "//xla:debug_options_flags",
         "//xla:literal",
+        "//xla:literal_pool",
         "//xla:protobuf_util",
         "//xla:shape_util",
         "//xla:status_macros",
@@ -271,6 +272,7 @@ cc_library(
         "//xla/hlo/transforms:hlo_constant_folding",
         "//xla/hlo/transforms:hlo_dce",
         "//xla/hlo/transforms:hlo_memory_scheduler",
+        "//xla/hlo/transforms:literal_canonicalizer",
         "//xla/hlo/transforms:logistic_expander",
         "//xla/hlo/transforms:operand_upcaster",
         "//xla/hlo/transforms:optimization_barrier_expander",
@@ -454,6 +456,7 @@ xla_test(
     ],
     tags = [
         "test_migrated_to_hlo_runner_pjrt",
+        "test_xla_cpu_no_thunks",
     ],
     deps = [
         "//xla/hlo/testlib:verified_hlo_module",
