@@ -19,13 +19,14 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <utility>
 
 #include "absl/base/optimization.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
 #include "xla/tsl/concurrency/chain.h"
 #include "xla/tsl/lib/math/math_util.h"
-#include "tsl/platform/logging.h"
+#include "xla/tsl/platform/logging.h"
 
 #define EIGEN_USE_THREADS
 #include "unsupported/Eigen/CXX11/Tensor"
@@ -47,11 +48,17 @@ static tsl::AsyncValueRef<tsl::Chain> OkDoneEventSingleton() {
   return singleton->AsRef();
 }
 
-ParallelLoopRunner::ParallelLoopRunner(Eigen::ThreadPoolDevice* device)
+ParallelLoopRunner::ParallelLoopRunner(const Eigen::ThreadPoolDevice* device)
     : done_event_(OkDoneEventSingleton()), device_(device) {}
 
+tsl::AsyncValueRef<tsl::Chain> ParallelLoopRunner::ResetDoneEvent() {
+  auto done_event = std::move(done_event_);
+  done_event_ = OkDoneEventSingleton();
+  return done_event;
+}
+
 size_t ParallelLoopRunner::num_threads() const {
-  return device_->numThreadsInPool();
+  return device_.load()->numThreadsInPool();
 }
 
 tsl::AsyncValueRef<tsl::Chain> ParallelLoopRunner::TakeDoneEvent(
@@ -59,20 +66,74 @@ tsl::AsyncValueRef<tsl::Chain> ParallelLoopRunner::TakeDoneEvent(
   return std::move(runner.done_event_);
 }
 
-void ParallelLoopRunner::Parallelize(
-    tsl::CountDownAsyncValueRef<tsl::Chain> count_down, size_t start_index,
-    size_t end_index, ParallelTask parallel_task) {
+ParallelLoopRunner::ParallelTaskConfig
+ParallelLoopRunner::ComputeParallelTaskConfig(size_t num_tasks) const {
+  // We limit the number of parallel tasks per thread to avoid excessive task
+  // scheduling overheads at run time.
+  static constexpr size_t kMaxTasksPerThread = 4;
+
+  size_t parallel_task_size =
+      tsl::MathUtil::CeilOfRatio(num_tasks, kMaxTasksPerThread * num_threads());
+  size_t num_parallel_tasks =
+      tsl::MathUtil::CeilOfRatio(num_tasks, parallel_task_size);
+
+  return {num_tasks, parallel_task_size, num_parallel_tasks};
+}
+
+template <typename Index, typename ParallelizeContext>
+static void Parallelize(ParallelizeContext* ctx, Index start_index,
+                        Index end_index) {
   CHECK_LT(start_index, end_index) << "Invalid task index range";  // Crash OK
+
+  // Recursively split the task into two halves and schedule the right half into
+  // the thread pool.
   while (end_index - start_index > 1) {
-    uint64_t mid_index = (start_index + end_index) / 2;
-    device_->enqueueNoNotification([this, mid_index, end_index, parallel_task,
-                                    count_down] {
-      Parallelize(std::move(count_down), mid_index, end_index, parallel_task);
+    Index mid_index = (start_index + end_index) / 2;
+    ctx->device->enqueueNoNotification([ctx, mid_index, end_index] {
+      Parallelize(ctx, mid_index, end_index);
     });
     end_index = mid_index;
   }
-  parallel_task(start_index);
-  count_down.CountDown();
+
+  // Execute the `start_index` task in the caller thread.
+  ctx->parallel_task(start_index);
+
+  // If count down is completed, delete the context.
+  if (ctx->count_down.CountDown()) {
+    delete ctx;
+  }
+}
+
+template <typename ParallelTask>
+void ParallelLoopRunner::Parallelize(
+    tsl::CountDownAsyncValueRef<tsl::Chain> count_down, size_t start_index,
+    size_t end_index, ParallelTask&& parallel_task) {
+  CHECK_LT(start_index, end_index) << "Invalid task index range";  // Crash OK
+
+  struct ParallelizeContext {
+    ParallelizeContext(tsl::CountDownAsyncValueRef<tsl::Chain> count_down,
+                       const Eigen::ThreadPoolDevice* device,
+                       ParallelTask&& parallel_task)
+        : count_down(std::move(count_down)),
+          device(device),
+          parallel_task(std::forward<ParallelTask>(parallel_task)) {}
+
+    tsl::CountDownAsyncValueRef<tsl::Chain> count_down;
+    const Eigen::ThreadPoolDevice* device;
+    ParallelTask parallel_task;
+  };
+
+  auto ctx = std::make_unique<ParallelizeContext>(
+      std::move(count_down), device_,
+      std::forward<ParallelTask>(parallel_task));
+
+  // We try to use uint16_t for index type because it enables small buffer
+  // optimization in the constructed `std::function` tasks.
+  if (ABSL_PREDICT_TRUE(end_index <= std::numeric_limits<uint16_t>::max())) {
+    xla::cpu::Parallelize<uint16_t>(ctx.release(), start_index, end_index);
+  } else {
+    xla::cpu::Parallelize<size_t>(ctx.release(), start_index, end_index);
+  }
 }
 
 template <typename Task>
@@ -125,6 +186,13 @@ struct Task3DTile2DIndex {
 };
 
 }  // namespace
+
+auto ParallelLoopRunner::ParallelTaskConfig::ParallelTaskRange(
+    size_t parallel_task_index) const -> TaskRange {
+  size_t begin = parallel_task_index * parallel_task_size;
+  size_t end = std::min(num_tasks, begin + parallel_task_size);
+  return {begin, end};
+}
 
 static Task1DTile1DIndex Delinearize(size_t task_index, size_t range,
                                      size_t tile) {
@@ -204,6 +272,35 @@ static Task3DTile2DIndex Delinearize(size_t task_index, size_t range_i,
 // (2) If done event is not available, we have to overwrite it with a new one
 //     that will be set to concrete state after the task is executed.
 
+void ParallelLoopRunner::Parallelize(size_t range, Task1D task) {
+  DCHECK(done_event_) << "Parallel loop runner is in moved-from state";
+  DCHECK_GT(range, 0) << "Expected at least one task";
+
+  // Fast path for the degenerate parallel loop with single task.
+  if (ABSL_PREDICT_TRUE(range == 1)) {
+    // Execute task in the caller thread if done event is already available.
+    if (ABSL_PREDICT_TRUE(done_event_.IsConcrete())) {
+      task(0);
+      return;
+    }
+
+    // Schedule task when done event becomes available.
+    ScheduleOne([task = std::move(task)] { task(0); });
+    return;
+  }
+
+  // Schedule `parallel_config.num_parallel_tasks` into the underlying thread
+  // pool when done event becomes available.
+  auto parallel_config = ComputeParallelTaskConfig(range);
+  auto parallel_task = [parallel_config,
+                        task = std::move(task)](size_t parallel_task_index) {
+    auto [begin, end] = parallel_config.ParallelTaskRange(parallel_task_index);
+    for (size_t i = begin; i < end; ++i) task(i);
+  };
+
+  ScheduleAll(parallel_config.num_parallel_tasks, std::move(parallel_task));
+}
+
 void ParallelLoopRunner::Parallelize(size_t range, size_t tile,
                                      Task1DTile1D task) {
   DCHECK(done_event_) << "Parallel loop runner is in moved-from state";
@@ -226,15 +323,19 @@ void ParallelLoopRunner::Parallelize(size_t range, size_t tile,
     return;
   }
 
-  // Schedule `num_tasks` into the underlying thread pool when done event
-  // becomes available.
-  auto parallel_task = [range, tile,
-                        task = std::move(task)](size_t task_index) {
-    auto x = Delinearize(task_index, range, tile);
-    task(x.offset, x.extent);
+  // Schedule `parallel_config.num_parallel_tasks` into the underlying thread
+  // pool when done event becomes available.
+  auto parallel_config = ComputeParallelTaskConfig(num_tasks);
+  auto parallel_task = [range, tile, parallel_config,
+                        task = std::move(task)](size_t parallel_task_index) {
+    auto [begin, end] = parallel_config.ParallelTaskRange(parallel_task_index);
+    for (size_t i = begin; i < end; ++i) {
+      auto x = Delinearize(i, range, tile);
+      task(x.offset, x.extent);
+    }
   };
 
-  ScheduleAll(num_tasks, std::move(parallel_task));
+  ScheduleAll(parallel_config.num_parallel_tasks, std::move(parallel_task));
 }
 
 void ParallelLoopRunner::Parallelize(size_t range_i, size_t range_j,
@@ -257,15 +358,19 @@ void ParallelLoopRunner::Parallelize(size_t range_i, size_t range_j,
     return;
   }
 
-  // Schedule `num_tasks` into the underlying thread pool when done event
-  // becomes available.
-  auto parallel_task = [range_i, range_j, tile_j,
-                        task = std::move(task)](size_t task_index) {
-    auto x = Delinearize(task_index, range_i, range_j, tile_j);
-    task(x.i, x.offset_j, x.extent_j);
+  // Schedule `parallel_config.num_parallel_tasks` into the underlying thread
+  // pool when done event becomes available.
+  auto parallel_config = ComputeParallelTaskConfig(num_tasks);
+  auto parallel_task = [range_i, range_j, tile_j, parallel_config,
+                        task = std::move(task)](size_t parallel_task_index) {
+    auto [begin, end] = parallel_config.ParallelTaskRange(parallel_task_index);
+    for (size_t i = begin; i < end; ++i) {
+      auto x = Delinearize(i, range_i, range_j, tile_j);
+      task(x.i, x.offset_j, x.extent_j);
+    }
   };
 
-  ScheduleAll(num_tasks, std::move(parallel_task));
+  ScheduleAll(parallel_config.num_parallel_tasks, std::move(parallel_task));
 }
 
 void ParallelLoopRunner::Parallelize(size_t range_i, size_t range_j,
@@ -292,15 +397,20 @@ void ParallelLoopRunner::Parallelize(size_t range_i, size_t range_j,
     return;
   }
 
-  // Schedule `num_tasks` into the underlying thread pool when done event
-  // becomes available.
+  // Schedule `parallel_config.num_parallel_tasks` into the underlying thread
+  // pool when done event becomes available.
+  auto parallel_config = ComputeParallelTaskConfig(num_tasks);
   auto parallel_task = [range_i, range_j, range_k, tile_j, tile_k,
-                        task = std::move(task)](size_t task_index) {
-    auto x = Delinearize(task_index, range_i, range_j, range_k, tile_j, tile_k);
-    task(x.i, x.offset_j, x.offset_k, x.extent_j, x.extent_k);
+                        parallel_config,
+                        task = std::move(task)](size_t parallel_task_index) {
+    auto [begin, end] = parallel_config.ParallelTaskRange(parallel_task_index);
+    for (size_t i = begin; i < end; ++i) {
+      auto x = Delinearize(i, range_i, range_j, range_k, tile_j, tile_k);
+      task(x.i, x.offset_j, x.offset_k, x.extent_j, x.extent_k);
+    }
   };
 
-  ScheduleAll(num_tasks, std::move(parallel_task));
+  ScheduleAll(parallel_config.num_parallel_tasks, std::move(parallel_task));
 }
 
 }  // namespace xla::cpu
