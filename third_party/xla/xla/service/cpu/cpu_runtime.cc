@@ -30,17 +30,21 @@ limitations under the License.
 #include "absl/base/attributes.h"
 #include "absl/base/dynamic_annotations.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
+#include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+#include "xla/backends/cpu/collectives/cpu_collectives.h"
 #include "xla/executable_run_options.h"
 #include "xla/hlo/parser/hlo_parser.h"
 #include "xla/layout_util.h"
+#include "xla/primitive_util.h"
 #include "xla/service/collective_ops_utils.h"
 #include "xla/service/computation_placer.h"
 #include "xla/service/cpu/collectives_interface.h"
@@ -51,6 +55,7 @@ limitations under the License.
 #include "xla/shape_util.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/platform/status.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
@@ -416,9 +421,13 @@ void AllGatherImpl(const ExecutableRunOptions* run_options,
 
   auto communicator =
       collectives->GetCommunicator(rendezvous_key.global_devices, rank).value();
-  TF_CHECK_OK(communicator->AllGather(rendezvous_key, buffer_size,
-                                      source_buffer, destination_buffer,
-                                      DefaultCollectiveTimeout()));
+
+  se::DeviceMemoryBase input_buffer_data(source_buffer, buffer_size);
+  se::DeviceMemoryBase output_buffer_data(destination_buffer, buffer_size);
+
+  CpuCollectives::Executor executor(rendezvous_key, DefaultCollectiveTimeout());
+  TF_CHECK_OK(communicator->AllGather(input_buffer_data, output_buffer_data, U8,
+                                      buffer_size, executor));
 }
 
 ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY
@@ -445,10 +454,18 @@ void ReduceScatterImpl(const ExecutableRunOptions* run_options,
 
   auto communicator =
       collectives->GetCommunicator(rendezvous_key.global_devices, rank).value();
+
+  auto dtype = static_cast<PrimitiveType>(element_type);
+
+  se::DeviceMemoryBase input_buffer_data(input_buffer,
+                                         primitive_util::ByteWidth(dtype));
+  se::DeviceMemoryBase output_buffer_data(output_buffer,
+                                          primitive_util::ByteWidth(dtype));
+
+  CpuCollectives::Executor executor(rendezvous_key, DefaultCollectiveTimeout());
   TF_CHECK_OK(communicator->ReduceScatter(
-      rendezvous_key, static_cast<ReductionKind>(reduction_kind),
-      static_cast<PrimitiveType>(element_type), chunk_elems, input_buffer,
-      output_buffer, DefaultCollectiveTimeout()));
+      input_buffer_data, output_buffer_data, dtype, chunk_elems,
+      static_cast<ReductionKind>(reduction_kind), executor));
 }
 
 ABSL_ATTRIBUTE_NO_SANITIZE_MEMORY
@@ -482,12 +499,26 @@ void AllReduceImpl(const ExecutableRunOptions* run_options,
 
   auto communicator =
       collectives->GetCommunicator(rendezvous_key.global_devices, rank).value();
+
+  // Convert input/output buffers to DeviceMemoryBase.
+  std::vector<se::DeviceMemoryBase> input_buffers_data;
+  std::vector<se::DeviceMemoryBase> output_buffers_data;
+  for (int i = 0; i < num_buffers; i++) {
+    Shape subshape = num_buffers == 1 ? shape : shape.tuple_shapes(i);
+    input_buffers_data.push_back(se::DeviceMemoryBase(
+        input_buffers[i], ShapeUtil::ByteSizeOf(subshape)));
+    output_buffers_data.push_back(se::DeviceMemoryBase(
+        output_buffers[i], ShapeUtil::ByteSizeOf(subshape)));
+  }
+
+  CpuCollectives::Executor executor(rendezvous_key, DefaultCollectiveTimeout());
+
   for (int i = 0; i < num_buffers; i++) {
     Shape subshape = num_buffers == 1 ? shape : shape.tuple_shapes(i);
     TF_CHECK_OK(communicator->AllReduce(
-        rendezvous_key, static_cast<ReductionKind>(reduction_kind),
-        subshape.element_type(), ShapeUtil::ElementsIn(subshape),
-        input_buffers[i], output_buffers[i], DefaultCollectiveTimeout()));
+        input_buffers_data[i], output_buffers_data[i], subshape.element_type(),
+        ShapeUtil::ElementsIn(subshape),
+        static_cast<ReductionKind>(reduction_kind), executor));
   }
 }
 
