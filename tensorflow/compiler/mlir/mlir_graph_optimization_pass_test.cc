@@ -23,6 +23,7 @@ limitations under the License.
 #include <vector>
 
 #include <gmock/gmock.h>
+#include <gtest/gtest.h>
 #include "absl/status/status.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -249,6 +250,71 @@ TEST_F(MlirGraphOptimizationPassTest, OptimizationPassFailsNoFallback) {
   verifyCounters();
 }
 
+TEST_F(MlirGraphOptimizationPassTest, OptimizationPassFailsDisabledFallback) {
+  Init(absl::Status(absl::StatusCode::kAborted, "aborted"),
+       {MlirOptimizationPassState::Disabled,
+        MlirOptimizationPassState::FallbackEnabled});
+
+  // We expect the result graph to be exactly the same as the original graph
+  // so we define the `graph_` by the following `flib` in this test point
+  // instead of the way we do in the Init method.
+  FunctionDefLibrary flib;
+  *flib.add_function() = XTimesTwo();
+  FunctionLibraryDefinition flib_def(OpRegistry::Global(), flib);
+  graph_ = std::make_unique<Graph>(flib_def);
+
+  GraphDef original_graph_def;
+  graph_->ToGraphDef(&original_graph_def);
+  AddModuleModificationPass(
+      MlirOptimizationPassState::FallbackEnabled,
+      absl::Status(absl::StatusCode::kAborted, "aborted"));
+
+  EXPECT_EQ(
+      function_optimization_pass_.Run(
+          "test_func", device_set_, config_proto_, function_options_, &graph_,
+          flib_.get(), &control_ret_node_names_, &control_rets_updated_),
+      absl::OkStatus());
+  verifyGraph(original_graph_def);
+  verifyCounters();
+}
+
+TEST_F(MlirGraphOptimizationPassTest, OptimizationPassDoesNotFailFallback) {
+  Init(absl::OkStatus(), {MlirOptimizationPassState::FallbackEnabled});
+
+  GraphDef original_graph_def;
+  graph_->ToGraphDef(&original_graph_def);
+
+  AddModuleModificationPass(MlirOptimizationPassState::FallbackEnabled,
+                            absl::OkStatus());
+  EXPECT_EQ(
+      function_optimization_pass_.Run(
+          "test_func", device_set_, config_proto_, function_options_, &graph_,
+          flib_.get(), &control_ret_node_names_, &control_rets_updated_),
+      absl::OkStatus());
+
+  verifyGraph(original_graph_def, true);
+  verifyCounters();
+}
+
+TEST_F(MlirGraphOptimizationPassTest, GraphDoesntConvertUpdatesCounter) {
+  Init(absl::OkStatus(), {MlirOptimizationPassState::FallbackEnabled});
+
+  graph_ = std::make_unique<Graph>(OpRegistry::Global());
+  control_ret_node_names_.push_back("foo");
+
+  AddModuleModificationPass(MlirOptimizationPassState::FallbackEnabled,
+                            absl::OkStatus());
+  EXPECT_EQ(
+      function_optimization_pass_.Run(
+          "test_func", device_set_, config_proto_, function_options_, &graph_,
+          flib_.get(), &control_ret_node_names_, &control_rets_updated_),
+      absl::OkStatus());
+
+  EXPECT_EQ(mlir_function_pass_graph_conversion_count_.Read(kOk), 0);
+  EXPECT_EQ(mlir_function_pass_graph_conversion_count_.Read(kInvalidArgument),
+            1);
+}
+
 TEST(MlirOptimizationPassRegistry, RegisterPassesWithTheSamePriorityFails) {
   MlirOptimizationPassRegistry::Global().Add(
       0, std::make_unique<NiceMock<MockMlirOptimizationPass>>());
@@ -320,6 +386,7 @@ class MlirGraphOptimizationV1PassTest : public Test {
               pass_result_expected_[MlirOptimizationPassState::FallbackEnabled]
                                    [false]);
     EXPECT_EQ(mlir_function_pass_graph_conversion_count_.Read(kOk), 0);
+    EXPECT_EQ(mlir_v1_compat_graph_conversion_count_.Read(kOk), 1);
   }
 
   void TearDown() override {
@@ -352,6 +419,11 @@ class MlirGraphOptimizationV1PassTest : public Test {
           monitoring::testing::CellReader<int64_t>(
               /* metric name */
               "/tensorflow/core/mlir_function_pass_graph_conversion_count");
+  monitoring::testing::CellReader<int64_t>
+      mlir_v1_compat_graph_conversion_count_ =
+          monitoring::testing::CellReader<int64_t>(
+              /* metric name */
+              "/tensorflow/core/mlir_v1_compat_graph_conversion_count");
 };
 
 TEST_F(MlirGraphOptimizationV1PassTest, OptimizationPassDoesNotFailFallback) {
