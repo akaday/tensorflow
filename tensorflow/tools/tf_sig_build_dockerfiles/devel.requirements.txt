@@ -15,11 +15,11 @@ ml_dtypes ~= 0.4.0 # Earliest version for NumPy 2.0
 numpy ~= 1.26.0
 opt_einsum ~= 3.3.0
 packaging ~= 23.2
-protobuf ~= 3.20.3
+protobuf ~= 6.33.6
 six ~= 1.16.0
 termcolor ~= 2.1.1
 typing_extensions ~= 4.8.0
-wheel ~= 0.41.2
+wheel ~= 0.47.0
 setuptools >= 70.0.0
 wrapt ~= 1.14.1
 # We need to pin the gast dependency exactly
@@ -44,7 +44,7 @@ auditwheel ~= 5.0.0
 twine ~= 3.6.0
 # For user tool scripts
 junitparser ~= 2.2.0
-lxml ~= 4.9.1
+lxml ~= 6.1.1
 pylint ~= 2.13.9
 
 # For using Python 3.11 with Bazel 6 (b/286090018)
